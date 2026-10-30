@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const out={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/plainNames.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{exports:out});
+assert.equal(out.plainName('Café 🚗 — Test'), 'Cafe - Test');
+assert.equal(out.plainName('日本語'), 'Untitled');
+assert.equal(out.plainName('CON.txt'), '_CON.txt');
+assert.equal(out.plainName('a/b: c?'), 'a-b- c');
+const source={title:'🚗 Café',path:'/NAS/Café/file.mp4',url:'https://example.test/日本',id:'日本',description:'Hello 🚗 world',nested:[{name:'Ångström'}]};
+const result=out.cleanDisplay(source);
+assert.equal(result.title,'Cafe');assert.equal(result.path,source.path);assert.equal(result.url,source.url);assert.equal(result.id,source.id);assert.equal(result.description,'Hello world');assert.equal(result.nested[0].name,'Angstrom');assert.equal(source.title,'🚗 Café');
+console.log('Plain names: emoji, accents, scripts, reserved names, nested displays and exact path/URL/ID preservation passed.');

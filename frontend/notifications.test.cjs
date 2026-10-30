@@ -1,0 +1,38 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const state={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/notifications-state.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:state,Error});
+(async()=>{
+ let changes=0;const unsubscribe=state.subscribeNotifications(()=>changes++);
+ const first=state.notify({message:'Saved.',kind:'success'});
+ assert.equal(state.notify({message:'Saved.',kind:'success'}),first);
+ assert.equal(state.notificationSnapshot().items.length,1,'duplicate outcome coalesces');
+ const a=state.notify({id:'alert-a',message:'A release failed.',kind:'error'}),b=state.notify({id:'alert-b',message:'A release failed.',kind:'error'});
+ assert.notEqual(a,b,'distinct server alerts retain identity even with identical text');
+ await state.dismissNotification(a,false);assert.ok(state.notificationSnapshot().items.some(n=>n.id===b));
+ let tries=0;const failure=state.notify({id:'persisted',kind:'warning',message:'Cookies need attention.',onDismiss:async()=>{tries++;throw Error('Server unavailable.');}});
+ assert.equal(await state.dismissNotification(failure),false);assert.equal(tries,1);
+ assert.ok(state.notificationSnapshot().items.some(n=>n.id===failure&&!n.dismissing));
+ assert.ok(state.notificationSnapshot().items.some(n=>n.message==='Server unavailable.'));
+ let release;const pending=state.notify({id:'async',message:'Retry needed',kind:'warning',onDismiss:()=>new Promise(r=>release=r)});
+ const dismissing=state.dismissNotification(pending);assert.equal(state.notificationSnapshot().items.find(n=>n.id===pending).dismissing,true);
+ assert.equal(await state.dismissNotification(pending),false,'double dismissal does not duplicate the request');
+ release();assert.equal(await dismissing,true);assert.ok(!state.notificationSnapshot().items.some(n=>n.id===pending));
+ const hostA={isConnected:true},hostB={isConnected:true};const removeA=state.registerNotificationHost(hostA),removeB=state.registerNotificationHost(hostB);
+ assert.equal(state.notificationSnapshot().host,hostB);removeB();assert.equal(state.notificationSnapshot().host,hostA);removeA();assert.equal(state.notificationSnapshot().host,null);
+ for(const item of state.notificationSnapshot().items)await state.dismissNotification(item.id,false);
+ let networkCalls=0,notices=[];const api={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/api.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:api,Error,require:n=>n==='./plainNames'?{cleanDisplay:x=>x}:{notify:n=>notices.push(n)},fetch:async()=>{networkCalls++;if(networkCalls===4)return{ok:true,json:async()=>({ok:true})};throw Error('Connection failed.');}});
+ for(let i=0;i<3;i++)await assert.rejects(api.api('/api/poll'),/Connection failed/);
+ assert.equal(notices.length,1,'unchanged polling failure reported once');
+ await api.api('/api/poll');await assert.rejects(api.api('/api/poll'));assert.equal(notices.length,2,'a recovered read may report a new failure');
+ await assert.rejects(api.api('/api/poll',undefined,{}));assert.equal(notices.length,3,'explicit failed action reports again');
+ const beforeAbort=notices.length;const abortApi={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/api.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:abortApi,Error,require:n=>n==='./plainNames'?{cleanDisplay:x=>x}:{notify:n=>notices.push(n)},fetch:async()=>{const e=Error('aborted');e.name='AbortError';throw e;}});await assert.rejects(abortApi.api('/api/aborted'));assert.equal(notices.length,beforeAbort);
+
+ const passiveApi={},passiveNotices=[];let status=400;
+ vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/api.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:passiveApi,Error,require:n=>n==='./plainNames'?{cleanDisplay:x=>x}:{notify:n=>passiveNotices.push(n)},fetch:async()=>({ok:false,status,json:async()=>({error:status===400?'Match this local file first.':'Server unavailable.'})})});
+ const expected={expectedReadStatuses:[400]};
+ await assert.rejects(passiveApi.api('/api/identity',undefined,undefined,undefined,expected),/Match this local file first/);
+ assert.equal(passiveNotices.length,0,'expected passive unavailable400 remains a caller-owned tooltip');
+ await assert.rejects(passiveApi.api('/api/identity'));assert.equal(passiveNotices.length,1,'quiet lookup does not mark a balloon as published');
+ await assert.rejects(passiveApi.api('/api/write',undefined,{},'csrf',expected));assert.equal(passiveNotices.length,2,'writes always report400 even with expected read option');
+ status=500;await assert.rejects(passiveApi.api('/api/identity',undefined,undefined,undefined,expected));assert.equal(passiveNotices.length,3,'unexpected server errors still report');
+ unsubscribe();assert.ok(changes>0);console.log('Notifications: dedupe, alert identity, async dismissal/rejection, dialog host lifetime, polling recovery and abort suppression passed.');
+})().catch(e=>{console.error(e);process.exitCode=1});

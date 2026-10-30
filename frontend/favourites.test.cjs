@@ -1,0 +1,62 @@
+const sharedSelect=require('./select-field-test-helper.cjs')();
+const selectChoices=[];
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),React=require('react'),{renderToStaticMarkup:renderMarkup}=require('react-dom/server');
+const {MantineProvider}=require('@mantine/core');
+const renderToStaticMarkup=tree=>renderMarkup(React.createElement(MantineProvider,{forceColorScheme:'dark'},tree));
+const out={};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/collections/CollectionShelf.tsx','utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX,esModuleInterop:true}}).outputText,{exports:out,Intl,Date,Set,require:name=>{
+ if(name.endsWith('/mediaDate'))return require('./media-date-test-helper.cjs')();
+ if(name.endsWith('/mediaDuration'))return require('./media-duration-test-helper.cjs')();
+ if(name==='@mantine/core')return require(name);
+ if(name==='../components/SelectField')return {SelectField:props=>{selectChoices.push({...props,choices:Array.from(sharedSelect.normalizeSelectData(props))});return React.createElement(sharedSelect.SelectField,props);}};
+ if(name==='react')return React;if(name==='react/jsx-runtime')return require(name);
+ if(name==='../components/ui')return{Button:({variant,iconOnly,...props})=>React.createElement('button',props),cn:(...xs)=>xs.filter(Boolean).join(' ')};
+ if(name==='../components/browse')return require('./media-browse-test-helper.cjs')();
+ if(name==='lucide-react')return new Proxy({},{get:()=>()=>null});
+ if(name==='../ChannelIdentity')return({name})=>React.createElement('span',{},name);
+ if(name==='./TileActions')return()=>null;
+ if(name==='../HoverCard')return {__esModule:true,default:()=>null,useCardHover:()=>({anchor:{current:null},open:false,show:()=>{},hide:()=>{},failed:[],failImage:()=>{}}),titleHover:()=>({})};
+ if(name==='../VideoTitle')return({id,title})=>React.createElement('button',{'data-video':id},title);
+ return{};
+}});
+const rows=['Zulu','Éclair','700 Miles','60 Paint','The Movie','apple','!Bravo'].map((title,i)=>({id:String(i),kind:'movie',title}));
+assert.deepEqual(Array.from(out.ordered(rows),r=>r.title),['60 Paint','700 Miles','apple','!Bravo','Éclair','The Movie','Zulu']);
+assert.equal(out.letter('Éclair'),'E');assert.equal(out.letter('$60 Paint'),'0-9');
+let calls=0;
+const html=renderToStaticMarkup(React.createElement(out.default,{id:'shows',title:'TV Shows',items:[{id:'show:77',kind:'show',title:'Show',downloadFuture:true}],kind:'show',open:()=>calls++}));
+assert.match(html,/Future downloads on/);assert.match(html,/mantine-SimpleGrid-root/);assert.doesNotMatch(html,/shelf-arrow/,'Shelves are wrapping grids, not carousels');
+assert.match(html,/aria-label="TV Shows alphabet"/);assert.match(html,/Jump to letter/);assert.equal(selectChoices.find(control=>control['aria-label']==='TV Shows alphabet').choices.length,28,'all 27 alphabet choices remain available in one styled picker');assert.match(html,/role="combobox"/);assert.ok(!html.includes('<select'));assert.equal(calls,0);
+const channel=renderToStaticMarkup(React.createElement(out.default,{id:'channels',title:'Channels',items:[{id:'UC'+'a'.repeat(22),kind:'channel',title:'Creator',image:'/avatar',avatar:'/avatar',banner:'/banner'}],kind:'channel',open:()=>{}}));
+assert.match(channel,/src="\/avatar"/);assert.match(channel,/mantine-AspectRatio-root/);
+const video=renderToStaticMarkup(React.createElement(out.default,{id:'videos',title:'Videos',items:[{id:'youtube:video:abcdefghijk',videoId:'abcdefghijk',kind:'video',title:'Video'}],kind:'video',open:()=>{}}));
+assert.match(video,/data-video="abcdefghijk"/);
+const genres=[{id:'1',kind:'channel',title:'Zulu',genres:['Technology',' technology ','Cars & motoring']},{id:'2',kind:'channel',title:'Apple',genre:'Technology, Science'},{id:'3',kind:'channel',title:'No metadata'}];
+assert.deepEqual(JSON.parse(JSON.stringify(out.genreOptions(genres))),[{value:'cars & motoring',label:'Cars & motoring',count:1},{value:'science',label:'Science',count:1},{value:'technology',label:'Technology',count:2},{value:'__uncategorised',label:'Uncategorised',count:1}]);
+assert.deepEqual(Array.from(out.ordered(out.filterGenre(genres,'technology')),v=>v.title),['Apple','Zulu']);
+assert.deepEqual(Array.from(out.filterGenre(genres,'__uncategorised'),v=>v.id),['3']);assert.equal(out.filterGenre(genres,'').length,3);
+const filteredShelf=renderToStaticMarkup(React.createElement(out.default,{id:'channels',title:'Favourite channels',items:genres,kind:'channel',open:()=>calls++,genreFilter:true}));
+assert.match(filteredShelf,/aria-label="Favourite channels genre"/);assert.match(filteredShelf,/All genres/);assert.ok(selectChoices.find(control=>control['aria-label']==='Favourite channels genre').choices.some(option=>option.label==='Uncategorised (1)'));assert.equal(calls,0);
+assert.doesNotMatch(html,/favourites-genre/);
+const episode=renderToStaticMarkup(React.createElement(out.default,{id:'shows',title:'TV Shows',kind:'show',items:[{id:'episode:show:77:2026:20',kind:'show',title:'Show · S2026E20 · Episode',episodeKey:'show:77:2026:20',episodeLabel:'S2026E20',episode:{date:'2020-01-01',file:false,requested:false}}],open:()=>calls++}));
+assert.match(episode,/S2026E20/);assert.match(episode,/Episode · 1 Jan 2020/);assert.match(episode,/Not downloaded/);assert.doesNotMatch(episode,/Future downloads off/);assert.equal(calls,0);
+const watch=renderToStaticMarkup(React.createElement(out.default,{id:'watch-movies',title:'Movies',kind:'movie',collection:'watchlist',genreFilter:true,onRemove:()=>calls++,items:[{id:'movie:77',kind:'movie',title:'Following',watchlistKey:'movie:77',watchStatus:'Upcoming',watchDate:'2099-01-01'}],open:()=>calls++}));
+assert.match(watch,/Movies watchlist/);assert.match(watch,/Remove from Watchlist · Following/);assert.match(watch,/Upcoming · 1 Jan 2099/);assert.doesNotMatch(watch,/aria-label="Favourite"/);assert.equal(calls,0);
+const emptyWatch=renderToStaticMarkup(React.createElement(out.default,{id:'watch-shows',title:'TV Shows',kind:'show',collection:'watchlist',items:[],open:()=>calls++}));
+assert.match(emptyWatch,/No TV shows on your Watchlist yet/);assert.match(emptyWatch,/Use Add to Watchlist in a media popup/);assert.doesNotMatch(emptyWatch,/Mark a favourite/);
+assert.equal(out.matchesQuery({title:'Éclair'},'eclair'),true,'Search folds diacritics');
+assert.equal(out.matchesQuery({title:'The Movie',channel:'Some Channel'},'movie channel'),true,'Every search word must appear across title and channel');
+assert.equal(out.matchesQuery({title:'The Movie'},'movie zebra'),false,'Unmatched words exclude the item');
+assert.equal(out.matchesQuery({title:'x',channel:'Sleeperdude'},'sleeper'),true,'Channel names are searchable');
+assert.equal(out.matchesQuery({title:'Anything'},'  '),true,'Blank search matches all');
+console.log('Favourites ordering, alphabet, policy labels, artwork, shared player IDs, search and genre filtering checks passed.');
+
+for(const [flags,label] of [[{downloadAll:true},'Download All Seasons on'],[{automatic:true},'Automatic downloads on'],[{downloadAll:true,downloadFuture:true},'Future downloads on']]){
+ const shelf=renderToStaticMarkup(React.createElement(out.default,{id:'watch-shows',title:'TV Shows',kind:'show',collection:'watchlist',items:[{id:'show:88',kind:'show',title:'Following',...flags}],open:()=>calls++}));
+ assert.match(shelf,new RegExp(label));assert.doesNotMatch(shelf,/Future downloads off/);
+}
+
+const actions=renderToStaticMarkup(React.createElement(out.default,{id:'watch-shows',title:'TV Shows',kind:'show',collection:'watchlist',onFavourite:()=>calls++,onRemove:()=>calls++,favouriting:['show:88'],items:[{id:'show:88',watchlistKey:'show:88',kind:'show',title:'Following',favourite:true}],open:()=>calls++}));
+assert.match(actions,/aria-label="Remove from favourites · Following"/);assert.match(actions,/aria-pressed="true" disabled=""/);
+assert.ok(actions.indexOf('Remove from favourites')<actions.indexOf('Remove from Watchlist'),'Heart precedes bookmark');
+assert.ok(!/<button[^>]*>(?:(?!<\/button>)[\s\S])*<button/.test(actions),'Actions are never nested buttons');
+assert.equal(calls,0);

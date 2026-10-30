@@ -1,0 +1,4 @@
+.viewport{position:fixed;inset:auto max(16px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) auto;display:flex;flex-direction:column;gap:10px;width:min(380px,calc(100vw - 24px));max-height:calc(100dvh - 32px);overflow:auto;margin:0;padding:0;border:0;background:transparent;color:var(--mantine-color-text);pointer-events:none;z-index:10000;scrollbar-width:thin}
+.viewport::backdrop{background:transparent;pointer-events:none}
+.card{pointer-events:auto;flex-shrink:0;box-shadow:var(--mantine-shadow-md)}
+@media(max-width:47.99em){.viewport{bottom:calc(78px + env(safe-area-inset-bottom));max-height:calc(100dvh - 160px)}}

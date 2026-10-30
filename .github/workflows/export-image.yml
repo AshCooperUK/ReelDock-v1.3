@@ -1,0 +1,29 @@
+name: Export private installation image
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published release to export, without the leading v (for example 1.0.0-alpha.1)
+        required: true
+permissions:
+  contents: write
+  packages: read
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Export verified release image
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          # The version was hard-coded to 0.1.0-alpha.4; it is now chosen when the workflow is run.
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo "Invalid version: $VERSION"; exit 1; }
+          # Image name comes from this repository, lower-cased (ghcr.io/<owner>/<repository>).
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull "$IMAGE:$VERSION"
+          docker save "$IMAGE:$VERSION" | gzip > "reeldock-$VERSION-amd64.tar.gz"
+          sha256sum "reeldock-$VERSION-amd64.tar.gz" > image-SHA256SUMS.txt
+          gh release upload "v$VERSION" "reeldock-$VERSION-amd64.tar.gz" image-SHA256SUMS.txt --repo "$GITHUB_REPOSITORY"

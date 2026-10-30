@@ -1,0 +1,12 @@
+.backdrop{
+ position:fixed;
+ inset:0;
+ z-index:-1;
+ pointer-events:none;
+ background-image:
+  radial-gradient(ellipse at 8% 0%,color-mix(in srgb,var(--mantine-primary-color-filled) 13%,transparent),transparent 58%),
+  radial-gradient(ellipse at 100% 80%,color-mix(in srgb,var(--mantine-primary-color-filled) 8%,transparent),transparent 55%),
+  repeating-radial-gradient(ellipse at 110% -20%,transparent 0 100px,color-mix(in srgb,var(--mantine-primary-color-filled) 6%,transparent) 101px 102px,transparent 103px 200px);
+}
+:global([data-mantine-color-scheme=light]) .backdrop{opacity:.45}
+:global([data-mantine-color-scheme=dark]) .backdrop{opacity:.8}

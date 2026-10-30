@@ -1,0 +1,21 @@
+import { ArrowDownToLine, ArrowRight, Bookmark, CalendarDays, Film, FolderOpen, Heart, Layers } from 'lucide-react';
+import { Badge, Box, Button, Group, Paper, SimpleGrid, Stack, Text, ThemeIcon, UnstyledButton } from '@mantine/core';
+import type { AppView } from '../appNavigation';
+import FutureDownloadTiles from '../FutureDownloadTiles';
+import { useDownloadFeed } from '../downloadFeed';
+import { overviewActivityCounts, activitySummaryText } from '../activityView';
+import { useTorrentJobs } from '../TorrentDownloads';
+import { useNzbJobs } from '../NzbDownloads';
+import { glanceTime } from './AtAGlance';
+import { PageFrame, PageHeader, Panel } from '../components/layout';
+import type { ReadyDashboard } from './types';
+export default function HomeShortcuts({ready,navigate}:{ready:ReadyDashboard;navigate:(view:AppView)=>void}){
+ const feed=useDownloadFeed(),torrents=useTorrentJobs(),nzbs=useNzbJobs();
+ const counts=overviewActivityCounts(feed.items,feed.activity?.tasks||[],torrents.jobs,nzbs.jobs);
+ const activity=feed.error||torrents.error||nzbs.error?'Activity unavailable':feed.loading&&!feed.activity?'Checking activity…':activitySummaryText(counts);
+ const next=ready.glance?.next;
+ const links=[{view:'Favourites' as AppView,title:'Favourites',copy:'Your collection across movies, shows and videos',Icon:Heart},{view:'Watchlist' as AppView,title:'Watchlist',copy:'Following releases and future downloads',Icon:Bookmark},{view:'Subscriptions' as AppView,title:'YouTube',copy:`${ready.overview.channels.toLocaleString()} channels · ${ready.overview.videos.toLocaleString()} uploads indexed`,Icon:Layers},{view:'Local Library' as AppView,title:'Library',copy:'Saved media, files and management',Icon:FolderOpen}];
+ return <PageFrame><PageHeader title="Overview" description="Your media workspace. Find something new, or pick up where you left off."/><Paper withBorder p="md" radius="md"><Group justify="space-between"><Group gap="sm"><Badge color={ready.overview.worker_online?'green':'gray'} variant="light">{ready.overview.worker_online?'Worker online':'Worker offline'}</Badge><Text c="dimmed">{ready.overview.downloads_paused?'Downloads paused':activity}</Text></Group><Button variant="subtle" onClick={()=>navigate('Activity')} rightSection={<ArrowRight size={15}/>}>View activity</Button></Group></Paper>
+ <SimpleGrid cols={{base:1,sm:3}} spacing="md">{[{label:'Channels',value:ready.overview.channels,view:'Subscriptions' as AppView},{label:'Saved YouTube videos',value:ready.glance?.indexed_youtube??0,view:'Local Library' as AppView},{label:'Waiting for release',value:counts.waiting,view:'Watchlist' as AppView}].map(s=><Paper key={s.label} withBorder radius="md" p="md"><UnstyledButton onClick={()=>navigate(s.view)} w="100%" style={{textAlign:'left'}}><Text c="dimmed" size="xs">{s.label}</Text><Text size="xl" fw={650} mt={6}>{s.value.toLocaleString()}</Text></UnstyledButton></Paper>)}</SimpleGrid>
+ <SimpleGrid cols={{base:1,lg:2}} spacing="lg"><Panel title="Your library"><Stack gap={4}>{links.map(l=><UnstyledButton key={l.title} onClick={()=>navigate(l.view)} p="sm" style={{borderRadius:'var(--mantine-radius-md)',minHeight:76}}><Group wrap="nowrap" gap="md"><ThemeIcon size={42} variant="light" radius="md"><l.Icon size={20}/></ThemeIcon><Box style={{flex:1,minWidth:0}}><Text fw={600}>{l.title}</Text><Text c="dimmed" size="xs" mt={3}>{l.copy}</Text></Box><ArrowRight size={17}/></Group></UnstyledButton>)}</Stack></Panel><Stack gap="lg"><Panel title="Next scheduled action" actions={<Button variant="subtle" onClick={()=>navigate('TV Guide')} leftSection={<CalendarDays size={16}/>}>Guide</Button>}><Group wrap="nowrap" gap="md"><ThemeIcon size={44} variant="light" color="gray"><CalendarDays size={22}/></ThemeIcon><Stack gap={4}><Text fw={600}>{next?.title||'Your schedule is clear'}</Text><Text c="dimmed">{next?next.at<=(ready.glance?.updated||0)?'Due now':glanceTime(next.at)+' UK':'Scheduled releases and upload checks appear here.'}</Text></Stack></Group></Panel><Panel title="Add a download" description="Choose an engine to scan a source before adding it."><FutureDownloadTiles/></Panel><Button variant="default" onClick={()=>navigate('Discover')} leftSection={<Film size={17}/>}>Browse connected sources</Button></Stack></SimpleGrid></PageFrame>;
+}

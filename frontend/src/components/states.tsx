@@ -1,0 +1,7 @@
+import { Box, Center, Group, Paper, Skeleton as MantineSkeleton, Stack, Text, ThemeIcon, Title } from '@mantine/core';
+import type { ReactNode } from 'react';
+import { FolderOpen } from 'lucide-react';
+export function Skeleton({className,lines=0}:{className?:string;lines?:number}){return lines?<Stack gap={8} aria-hidden="true" className={className}>{Array.from({length:lines},(_,i)=><MantineSkeleton key={i} height={12} width={i===lines-1?'65%':'100%'}/>)}</Stack>:<MantineSkeleton className={className} height={80} aria-hidden="true"/>;}
+export function SkeletonCard(){return <Paper withBorder radius="md" p="sm" aria-hidden="true"><Stack gap="sm"><MantineSkeleton height={180}/><Skeleton lines={2}/><Group gap="xs"><MantineSkeleton w={44} h={44}/><MantineSkeleton w={44} h={44}/></Group></Stack></Paper>;}
+export function SkeletonRow(){return <Paper withBorder radius="md" p="sm" aria-hidden="true"><Group wrap="nowrap"><MantineSkeleton w={44} h={44}/><Box style={{flex:1}}><Skeleton lines={2}/></Box></Group></Paper>;}
+export function EmptyState({title,children,icon}:{title:ReactNode;children?:ReactNode;icon?:ReactNode}){return <Paper withBorder radius="md" p="xl" role="status"><Center py="xl"><Stack align="center" gap="sm" maw={440} ta="center"><ThemeIcon variant="light" color="gray" size={52} radius="xl">{icon||<FolderOpen size={25} aria-hidden="true"/>}</ThemeIcon><Title order={3} size="h4">{title}</Title>{children&&<Text c="dimmed">{children}</Text>}</Stack></Center></Paper>;}

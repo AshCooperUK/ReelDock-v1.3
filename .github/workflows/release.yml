@@ -1,0 +1,96 @@
+name: Publish ReelDock
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+  packages: write
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Derive image name from this repository
+        run: |
+          # ghcr.io/<owner>/<repository>, lower-cased, so a copy of this project in
+          # another repository can never push to, or overwrite, this one's image.
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          version="${GITHUB_REF_NAME#v}"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]] || { echo "Invalid release tag: $GITHUB_REF_NAME"; exit 1; }
+          grep -Fqx "VERSION = 'v$version'" backend/app.py || { echo "backend/app.py VERSION does not match $GITHUB_REF_NAME"; exit 1; }
+          # The published compose file must install exactly the image this run builds.
+          total=$(grep -c '^ *image: ' compose.casaos.yaml)
+          matching=$(grep -Fxc "    image: $image:$version" compose.casaos.yaml || true)
+          [ "$total" -gt 0 ] && [ "$total" = "$matching" ] || { echo "compose.casaos.yaml must use $image:$version"; exit 1; }
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install media and native test tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg gcc libc6-dev openssl
+      - name: Build React and verify source
+        run: |
+          npm install --global pnpm@11.19.0
+          pnpm --dir frontend install --frozen-lockfile
+          pnpm --dir frontend build
+          # Run every frontend test file, so new tests cannot be forgotten here.
+          (
+            cd frontend
+            node --test *.test.cjs *.test.mjs
+          )
+          # PyYAML is only needed by the compose-file tests, not by the image.
+          pip install -r requirements.txt pyyaml==6.0.3
+          python -m unittest discover -s tests
+          docker compose -f compose.casaos.yaml config --quiet
+      - name: Build release image
+        run: docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --tag "$IMAGE:$VERSION" .
+      - name: Smoke test image
+        run: |
+          # A disposable loopback instance checks setup without installation mounts.
+          docker run -d --name reeldock-check -p 127.0.0.1:18790:8790 \
+            -e APP_PORT=8790 -e LOCAL_SETUP_URL=http://127.0.0.1:8790 "$IMAGE:$VERSION"
+          trap 'docker logs reeldock-check; docker rm -f reeldock-check' EXIT
+          for i in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:18790/health; then break; fi
+            sleep 2
+          done
+          curl --fail http://127.0.0.1:18790/health
+          docker exec -i reeldock-check python -c "import sys,unittest; exec(sys.stdin.read()); unittest.main()" < tests/test_hardware_encoding.py
+          curl --fail -H 'Host: 127.0.0.1:8790' http://127.0.0.1:18790/setup
+          for host in 127.0.0.1:8791 evil.example:8790; do
+            code=$(curl --silent --output /dev/null --write-out '%{http_code}' -H "Host: $host" http://127.0.0.1:18790/setup)
+            [ "$code" = 403 ] || { echo "Host $host returned $code, expected 403"; exit 1; }
+          done
+          docker exec reeldock-check python -c "from backend.credits import summaries; assert any(p['name']=='react' for p in summaries())"
+      - name: Publish container
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker push "$IMAGE:$VERSION"
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker save "$IMAGE:$VERSION" | gzip > reeldock-image-amd64.tar.gz
+          sha256sum compose.casaos.yaml reeldock-image-amd64.tar.gz > SHA256SUMS.txt
+          assets=(compose.casaos.yaml reeldock-image-amd64.tar.gz SHA256SUMS.txt)
+          notes="ReelDock $GITHUB_REF_NAME source and container release. Installation instructions are in INSTALL.txt in this repository."
+          # The tag may come from the GitHub "Draft a new release" page, which
+          # creates the release first; attach the assets to it instead of failing.
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${assets[@]}" --clobber
+            gh release edit "$GITHUB_REF_NAME" --title "ReelDock $GITHUB_REF_NAME" --notes "$notes" --prerelease
+          else
+            gh release create "$GITHUB_REF_NAME" "${assets[@]}" --title "ReelDock $GITHUB_REF_NAME" --notes "$notes" --prerelease
+          fi

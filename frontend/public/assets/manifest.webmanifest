@@ -1,0 +1,16 @@
+{
+  "name": "ReelDock",
+  "short_name": "ReelDock",
+  "description": "Your media. Your way.",
+  "id": "/app/",
+  "start_url": "/app/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#101312",
+  "theme_color": "#101312",
+  "icons": [
+    { "src": "/preview/assets/reeldock-icon.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/preview/assets/apple-touch-icon.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "/preview/assets/reeldock-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

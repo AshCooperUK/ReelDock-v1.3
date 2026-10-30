@@ -1,0 +1,39 @@
+# Local application state and private configuration
+.local/
+.validation/
+data/
+media/
+downloads/
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*cookies*.txt
+google-token.json
+flask-secret.txt
+*.key
+*.pem
+*.log
+
+# Documentation and development journals are not published
+*.[mM][dD]
+docs/
+/changelog*
+/CHANGELOG*
+/HISTORY*
+
+# Generated build and dependency files
+node_modules/
+.pnpm-store/
+frontend/dist/
+frontend/*.tsbuildinfo
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+Thumbs.db

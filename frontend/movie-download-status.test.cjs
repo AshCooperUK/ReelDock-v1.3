@@ -1,0 +1,10 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const React=require('react'),{renderToStaticMarkup:markup}=require('react-dom/server'),out={};
+const Mantine=require('@mantine/core');const renderToStaticMarkup=tree=>markup(React.createElement(Mantine.MantineProvider,{forceColorScheme:'dark'},tree));
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/discovery/MovieDownloadStatus.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,require:name=>name==='@mantine/core'?Mantine:name==='react/jsx-runtime'?require(name):{Check:()=>React.createElement('i')}});
+const render=row=>renderToStaticMarkup(React.createElement(out.default,{row,action:React.createElement('button',{},'Cancel download')}));
+let html=render({file:false,status:'Queued',requestState:'queued'});assert.match(html,/Queued/);assert.match(html,/size not available/);assert.match(html,/role="progressbar"/);assert.doesNotMatch(html,/aria-valuenow=/,'unknown queued progress stays indeterminate');
+html=render({file:false,status:'Downloading',requestState:'downloading',progress:25,estimatedBytes:2147483648});assert.match(html,/25% downloaded/);assert.match(html,/Estimated download size: 2.0 GB/);assert.match(html,/aria-valuenow="25"/);assert.match(html,/Cancel download/);
+html=render({file:false,status:'Extracting',requestState:'verifying',progress:100});assert.match(html,/Extracting/);assert.match(html,/Download received/);assert.doesNotMatch(html,/>Downloaded</);
+html=render({file:true,status:'In library',requestState:'complete',bytes:1073741824,filename:'A movie.mp4'});assert.match(html,/Downloaded/);assert.match(html,/1.0 GB/);assert.match(html,/A movie.mp4/);assert.doesNotMatch(html,/role="progressbar"|Cancel download|Estimated/);
+console.log('Movie transfer: queued unknown, measured progress/estimate, processing and actual completed file states passed.');

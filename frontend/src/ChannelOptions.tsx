@@ -1,0 +1,78 @@
+import { Badge, Box, Fieldset, Group as MantineGroup, Image, Paper, SimpleGrid, Stack, Text, Title } from '@mantine/core';
+import { SelectField as NativeSelect } from './components/SelectField';
+
+import { TextInput } from './TextField';
+import ChannelIdentity from './ChannelIdentity';
+import { PanelButton, PopupShell } from './components/ui';
+import { useEffect, useRef, useState } from 'react';
+import { Button, Dialog, DialogContent, DialogDescription, DialogTitle } from './components/ui';
+import { ConfirmInline } from './components/DetailSheet';
+import { Group, Row, Toggle, Notice, useAction } from './SettingsUI';
+import { api } from './api';
+export type DownloadRules = { quality: string; quality_override: number; videos: number | boolean; shorts: number | boolean; live: number | boolean; range_days: number; range_override?: number; minimum_video_minutes?: number; minimum_override?: number; subscription_paused?: number | boolean; keep_files: number | boolean; sponsorblock: string; force_transcode: string };
+export type Subscription = { latest_upload?:string|null; indexed_videos?:number; saved_count?:number; recent_average?:number|null; recent_sample?:number; total_views?:number|string|null; handle?:string; created?:string; country?:string; language?:string; topics?:string[]; id: string; name: string; can_manage_youtube?: boolean; avatar?: string; banner?: string; description?: string; subscribers?: number | string | null; video_count?: number | string | null; shown: boolean; forecasts: boolean; favourite: boolean; downloads: DownloadRules; disk_bytes?: number; checked_label?: string; coverage?: string; task?: { state: string; message: string; action?: string; created?: number } };
+const ranges = [[1,'Today'],[2,'Yesterday & today'],[7,'Last 7 days'],[14,'Last 14 days'],[30,'Last month'],[90,'Last 3 months'],[180,'Last 6 months'],[365,'Last year'],[730,'Last 2 years'],[0,'All uploads']] as const;
+const actions = [
+ ['download_pending','Download pending','Queue enabled video types within this channel’s selected range.'],
+ ['redownload_existing','Replace downloads','Download replacements for completed videos. Each existing file stays until its replacement succeeds.'],
+ ['deep_scan','Scan channel history','Check older uploads using the available YouTube connection.'],
+ ['refresh_metadata','Refresh metadata','Rebuild episode metadata and retry missing artwork.'],
+ ['sync_files','Sync files on disk','Organise recognised downloads into the configured TV folders.'],
+ ['refresh_emby','Scan Emby libraries','Start an Emby library scan. This can use significant server resources.'],
+ ['delete_media','Delete downloaded media','Permanently delete this channel’s downloaded videos and episode sidecars. Keep the channel and artwork. Turn off automatic downloads.'],
+ ['remove_channel','Remove channel','Remove the channel from ReelDock and stop automatic downloads. Keep downloaded files and the YouTube subscription.'],
+ ['remove_all','Remove channel and media','Remove the channel from ReelDock and permanently delete its downloaded videos and episode sidecars. Keep the YouTube subscription.'],
+ ['unsubscribe_youtube','Unsubscribe on YouTube','Remove the YouTube subscription and stop automatic downloads. Keep downloaded files.']
+] as const;
+const confirmActions = new Set(['redownload_existing','refresh_emby','delete_media','remove_channel','remove_all','unsubscribe_youtube']);
+export const channelActionLabel=(action:string):string=>actions.find(row=>row[0]===action)?.[1]||'Channel action';
+export function diskSize(bytes=0) { return bytes ? new Intl.NumberFormat('en-GB',{maximumFractionDigits:1}).format(bytes / (bytes>=1073741824?1073741824:1048576)) + (bytes>=1073741824?' GB':' MB') : 'No saved files'; }
+export default function ChannelOptions({channel,csrf,onChange,onRemoved,onClose,embedded=false,showFavourite=true}:{channel:Subscription;csrf:string;onChange:(item:Subscription)=>void;onRemoved:()=>void;onClose:()=>void;embedded?:boolean;showFavourite?:boolean}) {
+ const a=useAction(csrf), [confirm,setConfirm]=useState<(typeof actions)[number]|null>(null), [authorise,setAuthorise]=useState(false);
+ const latest=useRef({channel,onChange,onRemoved,onClose});latest.current={channel,onChange,onRemoved,onClose};
+ const previousTask=useRef(channel.task),requestRevision=useRef(0);
+ const [task,setTask]=useState(channel.task),[size,setSize]=useState(channel.disk_bytes),[pollError,setPollError]=useState('');
+ useEffect(()=>{const c=new AbortController();let timer:ReturnType<typeof setTimeout>;
+  async function poll(){const revision=requestRevision.current;try{const result=await api<{tasks:Record<string,NonNullable<Subscription['task']>>;sizes:Record<string,number>}>('/api/channel-tasks?ids='+encodeURIComponent(channel.id),c.signal);if(c.signal.aborted||revision!==requestRevision.current)return;
+ const next=result.tasks[channel.id],previous=previousTask.current;previousTask.current=next;
+ setTask(next);setSize(result.sizes[channel.id]||0);setPollError('');
+ if(next?.state==='complete'&&previous&&['queued','running'].includes(previous.state)){
+  const current=latest.current;window.dispatchEvent(new Event('reeldock-library-changed'));
+  if(next.action==='remove_channel'||next.action==='remove_all'){current.onRemoved();current.onClose();c.abort();return;}
+  current.onChange({...current.channel,disk_bytes:result.sizes[channel.id]||0,task:next,...(next.action==='delete_media'?{downloads:{...current.channel.downloads,videos:0,shorts:0,live:0}}:{})});
+ }}catch(e){if(!c.signal.aborted)setPollError(e instanceof Error?e.message:'Could not refresh status.');}finally{if(!c.signal.aborted)timer=setTimeout(poll,5000);}}
+  void poll();return()=>{c.abort();clearTimeout(timer);};
+ },[channel.id]);
+ async function rule(key:string,value:boolean|string|number){const result=await a.run<{downloads:DownloadRules}>('/api/channel-downloads/'+encodeURIComponent(channel.id),{settings:{[key]:value}});if(result)onChange({...channel,downloads:result.downloads});}
+ async function preference(key:'shown'|'forecasts'|'favourite',value:boolean){if(await a.run(key==='favourite'?'/api/channel-favourite/'+encodeURIComponent(channel.id):'/api/subscriptions',key==='favourite'?{favourite:value}:{ids:[channel.id],[key]:value}))onChange({...channel,[key]:value});}
+ async function run(key:string){requestRevision.current++;const result=await a.run<{message:string;authorise?:boolean}>('/api/channel-downloads/'+encodeURIComponent(channel.id),{action:key,confirm:confirmActions.has(key)},'Action queued.');if(!result)return;setConfirm(null);if(result.authorise){setAuthorise(true);return;}if(key==='unsubscribe_youtube'){window.dispatchEvent(new Event('reeldock-library-changed'));onRemoved();onClose();}else {requestRevision.current++;const queued={state:'queued',message:result.message,action:key};previousTask.current=queued;setTask(queued);}}
+ const pending=task?.state==='queued'||task?.state==='running';
+ const manage=<>{authorise&&<MantineGroup gap="sm"><Text size="sm">Google needs permission to manage subscriptions. Connect, then choose Unsubscribe again.</Text><Button disabled={a.busy} onClick={async()=>{const result=await a.run<{url:string}>('/api/youtube/authorise',{});if(result)location.assign(result.url);}}>Connect Google</Button></MantineGroup>}<Notice text={a.busy?'Working…':a.notice}/><Notice text={a.error} error/>{task&&(pending?<Text size="sm" role="status">{task.state}: {task.message||'Waiting for the background worker.'}</Text>:<Notice text={`${task.state}: ${task.message||'Task finished.'}`} error={task.state==='failed'}/>)}<Notice text={pollError} error/><Group title="Actions">{actions.filter(action=>action[0]!=='unsubscribe_youtube'||channel.can_manage_youtube!==false).map(action=><Row key={action[0]} title={action[1]} detail={action[2]}><Button variant="secondary" disabled={a.busy||pending} onClick={()=>confirmActions.has(action[0])?setConfirm(action):void run(action[0])}>{action[0].startsWith('remove')?'Remove':action[0]==='delete_media'?'Delete':action[0]==='unsubscribe_youtube'?'Unsubscribe':'Run'}</Button></Row>)}</Group></>;
+ const body=<Stack gap="lg">
+ <Fieldset variant="unstyled" p={0} disabled={a.busy}><Stack gap="lg">
+ <ChannelSettingsFields channel={channel} rule={rule} preference={preference} showFavourite={showFavourite}/></Stack></Fieldset>
+ <Notice text={a.busy?'Saving…':a.notice}/><Notice text={a.error} error/>
+
+ {task&&(pending?<Text size="sm" role="status">{task.state}: {task.message||'Waiting for the background worker.'}</Text>:<Notice text={`${task.state}: ${task.message||'Task finished.'}`} error={task.state==='failed'}/>)}
+ <Notice text={pollError} error/>
+
+ </Stack>;
+ // Inside a DetailSheet the options render inline and destructive actions
+ // confirm in place via ConfirmInline — never a stacked dialog.
+ if(embedded)return <>{body}{manage}{confirm&&<ConfirmInline title={confirm[1]} confirm="Confirm" busy={a.busy} onConfirm={()=>confirm&&run(confirm[0])} onCancel={()=>{if(!a.busy)setConfirm(null);}}><Text size="sm">{confirm[2]}</Text><Notice text={a.error} error/></ConfirmInline>}</>;
+ return <PopupShell banner={channel.banner} title={channel.name} subtitle="Channel options"><Stack gap="lg">{body}{manage}{confirm&&<ConfirmInline title={confirm[1]} confirm="Confirm" busy={a.busy} onConfirm={()=>confirm&&run(confirm[0])} onCancel={()=>{if(!a.busy)setConfirm(null);}}><Text size="sm">{confirm[2]}</Text><Notice text={a.error} error/></ConfirmInline>}</Stack></PopupShell>;
+}
+
+function ChannelToggle({mixed,...props}:Parameters<typeof Toggle>[0]&{mixed?:boolean}){
+ return mixed?<Row title={props.title} detail={props.detail}><NativeSelect aria-label={props.title} value="mixed" onChange={e=>props.onChange(e.target.value==='on')}><option value="mixed" disabled>Mixed — choose to change</option><option value="on">On</option><option value="off">Off</option></NativeSelect></Row>:<Toggle {...props}/>;
+}
+export function ChannelSettingsFields({channel,rule,preference,mixed=new Set<string>(),showFavourite=true}:{channel:Subscription;rule:(key:string,value:boolean|string|number)=>void;preference:(key:'shown'|'forecasts'|'favourite',value:boolean)=>void;mixed?:Set<string>;showFavourite?:boolean}){
+ return <> <Group title="Guide"><ChannelToggle mixed={mixed.has("shown")} title="Show in guide" value={channel.shown} onChange={v=>preference('shown',v)} detail="Hidden channels stay in ReelDock’s channel list and continue syncing."/><ChannelToggle mixed={mixed.has("forecasts")} title="Upload forecasts" value={channel.forecasts} onChange={v=>preference('forecasts',v)}/>{showFavourite&&<ChannelToggle mixed={mixed.has("favourite")} title="Favourite" value={channel.favourite} onChange={v=>preference('favourite',v)}/>}</Group>
+ <Group title="Automatic downloads"><ChannelToggle mixed={mixed.has("subscription_paused")} title="Pause automatic downloads" value={!!channel.downloads.subscription_paused} onChange={v=>rule('subscription_paused',v)} detail="Hold this channel’s automatic queue and retention cleanup without changing its preferences. A running automatic download stops and restarts when resumed. Manual downloads remain available."/>{(['videos','shorts','live'] as const).map(key=><ChannelToggle mixed={mixed.has(key)} key={key} title={{videos:'Videos',shorts:'Shorts',live:'Completed live streams'}[key]} value={!!channel.downloads[key]} onChange={v=>rule(key,v)} detail="Turning this on includes saved uploads within the selected range, newest first."/>)}
+ <Row title="Quality"><NativeSelect aria-label="Channel quality" value={mixed.has("quality")?"mixed":(channel.downloads.quality_override?channel.downloads.quality:'default')} onChange={e=>rule('quality',e.target.value)}>{mixed.has("quality")&&<option value="mixed" disabled>Mixed — choose to change</option>}<option value="default">Use global setting</option>{['480','720','1080','2160'].map(q=><option key={q} value={q}>{q==='2160'?'4K':q+'p'}</option>)}</NativeSelect></Row>
+ <Row title="Download range" detail="Use the default download range in Settings > YouTube, or choose a range for this channel. Based on publication date. Automatic downloads outside this range are removed unless protected below. Manual downloads are always kept."><NativeSelect aria-label="Download range" value={mixed.has("range_days")?"mixed":(channel.downloads.range_override===0?'default':channel.downloads.range_days)} onChange={e=>rule('range_days',e.target.value==='default'?'default':Number(e.target.value))}>{mixed.has("range_days")&&<option value="mixed" disabled>Mixed — choose to change</option>}<option value="default">Use global setting</option>{ranges.map(([value,label])=><option value={value} key={value}>{label}</option>)}</NativeSelect></Row>
+ <Row title="Minimum length" detail="Automatic normal videos only; Shorts and completed live streams are exempt. Manual selections override automatic type, date and minimum-length filters."><NativeSelect aria-label="Channel minimum length" value={mixed.has('minimum_video_minutes')?'mixed':channel.downloads.minimum_override?'custom':'default'} onChange={e=>rule('minimum_video_minutes',e.target.value==='default'?'default':channel.downloads.minimum_video_minutes??5)}>{mixed.has('minimum_video_minutes')&&<option value="mixed" disabled>Mixed — choose to change</option>}<option value="default">Use global setting</option><option value="custom">Custom minimum</option></NativeSelect></Row>
+ {channel.downloads.minimum_override===1&&!mixed.has('minimum_video_minutes')&&<Row title="Minimum length (minutes)"><TextInput aria-label="Channel minimum length (minutes)" type="number" min="0" max="120" key={String(channel.downloads.minimum_video_minutes)} defaultValue={channel.downloads.minimum_video_minutes} onBlur={e=>{if(!e.currentTarget.value||!e.currentTarget.checkValidity()){e.currentTarget.reportValidity();return;}const value=Number(e.currentTarget.value);if(value!==channel.downloads.minimum_video_minutes)rule('minimum_video_minutes',value);}}/></Row>}
+ <ChannelToggle mixed={mixed.has("keep_files")} title="Keep downloaded videos" value={!!channel.downloads.keep_files} onChange={v=>rule('keep_files',v)} detail="Protect this channel’s automatic downloads from retention cleanup. All uploads also disables automatic deletion."/>
+ </Group><Group title="Processing overrides"><Row title="SponsorBlock" detail="Overrides the global SponsorBlock setting for this channel. Uses community-marked sponsor segments; unmarked adverts cannot be removed."><NativeSelect aria-label="Channel SponsorBlock" value={mixed.has("sponsorblock")?"mixed":(channel.downloads.sponsorblock||'default')} onChange={e=>rule('sponsorblock',e.target.value)}>{mixed.has("sponsorblock")&&<option value="mixed" disabled>Mixed — choose to change</option>}<option value="default">Use global setting</option><option value="off">Off</option><option value="mark">Mark chapters</option><option value="remove">Skip sponsor segments</option></NativeSelect></Row><Row title="Force FFmpeg transcode" detail="Re-encode every new download as H.264/AAC MP4. Uses hardware encoding when enabled and available, with CPU fallback. Requires extra processing time; existing files are unchanged until replaced."><NativeSelect aria-label="Channel FFmpeg transcode" value={mixed.has("force_transcode")?"mixed":(channel.downloads.force_transcode||'default')} onChange={e=>rule('force_transcode',e.target.value)}>{mixed.has("force_transcode")&&<option value="mixed" disabled>Mixed — choose to change</option>}<option value="default">Use global setting</option><option value="on">Always transcode</option><option value="off">Only when needed</option></NativeSelect></Row></Group></>;
+}

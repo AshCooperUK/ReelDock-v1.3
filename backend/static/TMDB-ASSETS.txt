@@ -1,0 +1,7 @@
+# TMDB branding
+
+Official, unmodified artwork downloaded from https://www.themoviedb.org/about/logos-attribution on 2026-09-27.
+
+- tmdb-logo.svg: https://www.themoviedb.org/assets/v4/logos/v2/blue_short-8e7b30f73a4020692ccca9c88bafe5dcb6f8a62a4c6bc55cd9ba82bb2cd95f6c.svg
+
+TMDB branding belongs to its respective owner. Attribution and branding guidance: https://developer.themoviedb.org/docs/faq

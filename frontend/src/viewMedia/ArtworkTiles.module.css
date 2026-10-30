@@ -1,0 +1,31 @@
+.tile { min-width: 0; list-style: none; }
+.tile .button { display: block; position: relative; border-radius: var(--mantine-radius-sm); }
+.button .title {
+ position: absolute;
+ inset-inline: 0;
+ bottom: 0;
+ padding: var(--mantine-spacing-xs);
+ max-height: 100%;
+ overflow: hidden;
+ overflow-wrap: anywhere;
+ border-radius: 0 0 var(--mantine-radius-sm) var(--mantine-radius-sm);
+ background: var(--mantine-color-dark-9);
+ color: var(--mantine-color-white);
+ visibility: hidden;
+ pointer-events: none;
+}
+@supports (background: color-mix(in srgb, white, transparent)) {
+ .button .title { background: color-mix(in srgb, var(--mantine-color-dark-9) 94%, transparent); }
+}
+@media (hover: hover) {
+ .button:hover .title { visibility: visible; }
+}
+.button:focus-visible { outline: 2px solid var(--mantine-color-text); outline-offset: 3px; }
+.button:focus-visible .title { visibility: visible; }
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+ .button .title { background: var(--mantine-color-dark-9); }
+}
+@media (forced-colors: active) {
+ .button .title { background: Canvas; color: CanvasText; }
+ .button:focus-visible { outline-color: Highlight; }
+}

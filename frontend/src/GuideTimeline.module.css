@@ -1,0 +1,13 @@
+.viewport{overflow-x:auto;position:relative;isolation:isolate}
+.table{min-width:1320px;position:relative}
+.header,.row{display:grid;grid-template-columns:200px 1fr}
+.header{position:sticky;top:0;z-index:4;background:var(--mantine-color-body);border-bottom:1px solid var(--mantine-color-default-border)}
+.header>:first-child{position:sticky;left:0;background:var(--mantine-color-body);z-index:2}
+.days{display:grid;grid-template-columns:repeat(7,minmax(0,1fr))}
+.row{border-bottom:1px solid var(--mantine-color-default-border)}
+.identity{position:sticky;left:0;background:var(--mantine-color-body);z-index:2;border-right:1px solid var(--mantine-color-default-border)}
+.track{position:relative;background:repeating-linear-gradient(to right,transparent 0,transparent calc(100% / 7 - 1px),var(--mantine-color-default-border) calc(100% / 7 - 1px),var(--mantine-color-default-border) calc(100% / 7))}
+.programme{position:absolute;height:94px;text-align:left;cursor:pointer;color:var(--mantine-color-text);overflow:hidden}
+.title{display:flex;align-items:center;min-height:44px;text-align:left;min-width:0;font-weight:600;line-height:1.35;overflow-wrap:anywhere}
+.agendaArt{width:64px;height:64px;flex-shrink:0;border-radius:var(--mantine-radius-md);overflow:hidden;display:flex;align-items:center;justify-content:center;background:var(--mantine-color-default)}
+.now{position:absolute;top:0;bottom:0;border-left:2px solid var(--mantine-color-red-6);pointer-events:none;z-index:1}

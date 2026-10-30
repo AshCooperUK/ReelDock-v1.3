@@ -1,0 +1,4 @@
+.fields{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--mantine-spacing-sm)}
+.fields>*{min-width:0}
+@media(min-width:48em){.fields{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(min-width:75em){.fields{grid-template-columns:repeat(4,minmax(0,1fr))}}

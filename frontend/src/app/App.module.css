@@ -1,0 +1,19 @@
+.brand{display:flex;align-items:center;gap:9px;color:inherit;text-decoration:none;flex-shrink:0}
+.brandMark{display:grid;place-items:center;width:34px;height:34px;border-radius:var(--mantine-radius-md);background:var(--mantine-primary-color-light);color:light-dark(var(--mantine-color-black),var(--mantine-primary-color-light-color))}
+.search{flex:1;min-width:0}
+.navigation{display:flex;flex-direction:column;gap:4px;min-height:0}
+.groupLabel{padding:18px 12px 6px;font-size:var(--mantine-font-size-xs);font-weight:600;color:var(--mantine-color-dimmed);letter-spacing:.04em;text-transform:uppercase}
+.workspace{display:block;min-width:0}
+.sidebar{display:none}
+.main{width:100%;max-width:1440px;margin-inline:auto;min-width:0;padding:12px}
+@media(min-width:48em){.workspace{display:grid;grid-template-columns:76px minmax(0,1fr)}.sidebar{display:block;padding:12px 8px;border-right:1px solid var(--mantine-color-default-border)}.main{padding:24px}}
+@media(min-width:75em){.workspace{grid-template-columns:224px minmax(0,1fr)}.main{padding:32px}}
+.bottomNav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));height:100%;padding-bottom:env(safe-area-inset-bottom)}
+.bottomLink{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-height:54px;min-width:44px;border-radius:var(--mantine-radius-sm);font-size:var(--mantine-font-size-xs);color:var(--mantine-color-dimmed)}
+.bottomLink[data-active]{color:light-dark(var(--mantine-color-black),var(--mantine-primary-color-light-color));background:var(--mantine-primary-color-light)}
+.footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:32px;padding-block:16px;border-top:1px solid var(--mantine-color-default-border);color:var(--mantine-color-dimmed)}
+.spin{animation:turn var(--reeldock-spinner-duration) linear infinite}
+@keyframes turn{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){.spin{animation:none}}
+
+@media(min-width:48em) and (max-width:74.99em){.brandName{display:none}}

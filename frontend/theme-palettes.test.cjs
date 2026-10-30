@@ -1,0 +1,17 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const ts = require('typescript');
+const core = require('@mantine/core');
+const loaded = {};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname + '/src/mantineTheme.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, { exports: loaded, require: name => { assert.equal(name, '@mantine/core'); return core; } });
+const theme = core.mergeMantineTheme(core.DEFAULT_THEME, loaded.mantineTheme);
+assert.deepEqual(theme.colors, core.DEFAULT_THEME.colors, 'No competing custom palette');
+assert.equal(theme.fontFamily, core.DEFAULT_THEME.fontFamily);
+for (const name of ['Button', 'ActionIcon', 'TextInput', 'PasswordInput', 'FileInput', 'Select']) assert.ok(theme.components[name], name);
+assert.equal(theme.components.Button.defaultProps.h, 44);
+assert.equal(theme.components.ActionIcon.defaultProps.size, 44);
+for (const name of ['TextInput', 'Select', 'PasswordInput', 'FileInput']) assert.equal(theme.components[name].styles.input.minHeight, 44);
+assert.ok(!fs.existsSync(__dirname + '/src/themes.css'));
+assert.ok(!fs.existsSync(__dirname + '/src/wallpapers'));
+console.log('Stock Mantine palette retained, consistent control sizing and obsolete theme payload removed.');

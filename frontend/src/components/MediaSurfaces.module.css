@@ -1,0 +1,86 @@
+/* Shared media finish. Content stays opaque; grids do not create blur layers. */
+.surface.surface {
+ --mantine-color-dimmed: var(--mantine-color-gray-7);
+ --mantine-color-anchor: var(--mantine-color-text);
+ background: var(--mantine-color-body);
+ border-color: var(--mantine-color-default-border);
+ box-shadow: var(--mantine-shadow-xs);
+ background-clip: padding-box;
+}
+
+:global([data-mantine-color-scheme='dark']) .surface {
+ --mantine-color-dimmed: var(--mantine-color-dark-1);
+}
+
+.surface :global(.mantine-Anchor-root) {
+ text-decoration-line: underline;
+ text-underline-offset: .16em;
+}
+
+.surface:focus-visible,
+.surface :where(a, button, input, select, textarea, [tabindex]):focus-visible {
+ outline: 2px solid var(--mantine-color-text);
+ /* Selected cards retain an inline accent outline until keyboard focus. */
+ outline-color: var(--mantine-color-text) !important;
+ outline-offset: 3px;
+}
+
+@supports (background: color-mix(in srgb, white, transparent)) and ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+ .surface.surface {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--mantine-color-body) 86%, transparent), color-mix(in srgb, var(--mantine-color-body) 94%, transparent));
+  border-color: color-mix(in srgb, var(--mantine-color-default-border) 86%, var(--mantine-color-text) 14%);
+ }
+
+ .surface.bannerInformation {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--mantine-color-body) 88%, transparent), color-mix(in srgb, var(--mantine-color-body) 92%, transparent));
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  box-shadow: var(--mantine-shadow-md);
+ }
+
+ .surface.preview {
+  background: color-mix(in srgb, var(--mantine-color-body) 92%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  box-shadow: var(--mantine-shadow-md);
+ }
+}
+
+@media (hover: hover) {
+ .tile:hover { border-color: var(--mantine-color-text); }
+}
+
+.surface[data-media-active],
+.surface[data-selected='true'] {
+ box-shadow: inset 0 0 0 1px var(--mantine-color-text), var(--mantine-shadow-xs);
+}
+
+@media (prefers-reduced-transparency: reduce), (prefers-contrast: more) {
+ .surface.surface,
+ .surface[data-media-active],
+ .surface[data-selected='true'] {
+  background: var(--mantine-color-body);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  border-color: var(--mantine-color-text);
+  box-shadow: none;
+ }
+}
+
+@media (forced-colors: active) {
+ .surface.surface,
+ :global([data-mantine-color-scheme]) .surface,
+ .surface[data-media-active],
+ .surface[data-selected='true'] {
+  --mantine-color-text: CanvasText;
+  --mantine-color-dimmed: CanvasText;
+  --mantine-color-anchor: LinkText;
+  background: Canvas;
+  color: CanvasText;
+  border-color: CanvasText;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow: none;
+  forced-color-adjust: auto;
+ }
+}

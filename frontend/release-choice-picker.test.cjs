@@ -1,0 +1,61 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const React=require('react'),M=require('@mantine/core'),{renderToStaticMarkup}=require('react-dom/server');
+const labels={},out={};
+const compile=file=>ts.transpileModule(fs.readFileSync(__dirname+'/src/discovery/'+file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText;
+vm.runInNewContext(compile('releaseLabels.ts'),{exports:labels});
+let opened=false,value='indexer:long-file',focus=0;const selected=[],ref={current:{focus:()=>focus++}};
+vm.runInNewContext(compile('ReleaseChoicePicker.tsx'),{exports:out,require:name=>name==='react'?{...React,useState:()=>[opened,next=>opened=typeof next==='function'?next(opened):next],useRef:()=>ref,useId:()=> 'inline-release-files'}:name==='./releaseLabels'?labels:require(name)});
+const title='Fixture.Harbour.S10E04.1080p.WEB-DL.Full.Release.Name.'.repeat(6);
+const releases=[{id:'indexer:long-file',title,size:4*1073741824,quality:'1080p',reason:''},{id:'indexer:sample',title:'Fixture.Harbour.S10E04.Sample',size:123,reason:'Sample content excluded'},{id:'vod:exact-source:exact/path.strm',title:'Fixture Harbour Episode Four',size:0,reason:''}];
+const nodes=node=>node==null?[]:Array.isArray(node)?node.flatMap(nodes):typeof node==='object'?[node,...nodes(node.props?.children),...nodes(node.props?.label)]:[];
+const draw=()=>out.ReleaseChoicePicker({releases,value,label:'Download file',onChange:id=>{selected.push(id);value=id;}});
+const render=(tree,width=320)=>renderToStaticMarkup(React.createElement(M.MantineProvider,{forceColorScheme:'dark'},React.createElement('div',{style:{width}},tree)));
+let tree=draw(),trigger=nodes(tree).find(node=>node.props?.['aria-controls']==='inline-release-files');
+assert.equal(trigger.props['aria-expanded'],false);assert.equal(trigger.props.fullWidth,true);assert.equal(trigger.props.mih,44);
+trigger.props.onClick();tree=draw();assert.equal(opened,true);
+const html=render(tree);
+assert.match(html,/data-release-chooser="inline"/);assert.equal((html.match(/type="radio"/g)||[]).length,3);assert.equal((html.match(/checked=""/g)||[]).length,1);
+assert.ok(html.includes(title),'the full filename remains readable in the expanded sheet');assert.match(html,/1080p · 4.0 GB/);assert.match(html,/Sample content excluded/);
+const sample=(html.match(/<input\b[^>]*>/g)||[]).find(input=>input.includes('value="indexer:sample"'));assert.match(sample,/disabled=""/);
+for(const width of [320,768,1440]){
+ const atWidth=render(tree,width);
+ assert.doesNotMatch(atWidth,/role="combobox"|role="dialog"|mantine-Modal|mantine-Popover|overflow-y|max-height/i,'all widths keep expanded choices in normal parent body flow');
+ assert.ok(atWidth.includes(title),'full release filenames remain available at every width');
+}
+for(const [key,from,to] of [['ArrowDown',releases[0].id,releases[2].id],['ArrowUp',releases[0].id,releases[2].id],['ArrowRight',releases[2].id,releases[0].id],['Home',releases[2].id,releases[0].id],['End',releases[0].id,releases[2].id]])assert.equal(out.releaseChoiceKey(releases,from,key),to,'keyboard skips disabled sample: '+key);
+let prevented=0,stopped=0,keyboardFocus='';
+tree.props.onKeyDown({key:'ArrowDown',target:{type:'radio',value},preventDefault:()=>prevented++,stopPropagation:()=>stopped++,currentTarget:{querySelectorAll:()=>releases.map(release=>({value:release.id,focus:()=>keyboardFocus=release.id}))}});
+assert.equal(selected.at(-1),releases[2].id);assert.equal(keyboardFocus,releases[2].id);assert.equal(opened,true,'arrow selection keeps the inline list available');assert.equal(prevented,1);assert.equal(stopped,1);
+tree=draw();let radio=nodes(tree).find(node=>node.type===M.Radio.Group),count=selected.length;
+radio.props.onChange(releases[1].id);assert.equal(selected.length,count,'rejected files cannot invoke selection');assert.equal(opened,true);
+radio.props.onChange(releases[0].id);assert.equal(selected.at(-1),releases[0].id);assert.equal(opened,false);assert.equal(focus,1,'choosing an enabled exact ID restores trigger focus');
+opened=true;tree=draw();tree.props.onKeyDown({key:'Escape',target:{},preventDefault:()=>prevented++,stopPropagation:()=>stopped++});assert.equal(opened,false);assert.equal(focus,2);assert.equal(stopped,2,'Escape is consumed by only the inline chooser');
+tree=draw();assert.equal(tree.props['data-release-chooser'],'inline','desktop and phone share the full-width in-sheet chooser');
+const layout=out.DownloadChoiceLayout({source:React.createElement('span',null,'Source'),file:React.createElement('span',null,'File'),action:React.createElement('button',null,'Download')});
+const columns=nodes(layout).filter(node=>node.type===M.Grid.Col);assert.equal(columns.length,3);assert.ok(columns.every(column=>column.props.span.base===12),'each choice/action spans the entire phone row');assert.equal(columns.map(column=>column.props.span.sm).join(','),'12,12,12','file, source and action each own a full-width row');
+const layoutHtml=render(layout);assert.ok(layoutHtml.indexOf('>File<')<layoutHtml.indexOf('>Source<'),'the file choice precedes source and Download');
+assert.doesNotMatch(fs.readFileSync(__dirname+'/src/discovery/ReleaseChoicePicker.tsx','utf8'),/overflowY|maxHeight|<Modal|<Popover|<ScrollArea/,'the chooser owns no nested popup or scrolling area');
+// Source selection reuses the exact same keyboard/focus boundary, with raw
+// source names as values and source-specific visible copy.
+let sourceValue='api.nzbgeek.info';const sourceCalls=[],sources=['api.nzbgeek.info','api.nzb.life','api.nzbgeek.info'];
+const drawSource=()=>{const wrapper=out.DownloadSourcePicker({sources,value:sourceValue,onChange:id=>{sourceCalls.push(id);sourceValue=id;}});return out.ReleaseChoicePicker(wrapper.props);};
+opened=false;tree=drawSource();trigger=nodes(tree).find(node=>node.props?.['aria-controls']==='inline-release-files');
+assert.equal(trigger.props['aria-label'],'Download source');assert.equal(trigger.props.title,'api.nzbgeek.info');
+assert.match(render(tree),/2 sources available · Change source/);assert.doesNotMatch(render(tree),/Change file| GB|1080p/);
+trigger.props.onClick();tree=drawSource();const sourceHtml=render(tree);
+assert.equal((sourceHtml.match(/type="radio"/g)||[]).length,2,'duplicate source names retain one exact option');
+assert.ok(sourceHtml.includes('api.nzbgeek.info')&&sourceHtml.includes('api.nzb.life'));assert.match(sourceHtml,/Hide sources/);
+const groupTag=sourceHtml.match(/<[^>]+role="radiogroup"[^>]*>/)?.[0],sourceLabel=groupTag?.match(/aria-labelledby="([^"]+)"/)?.[1];
+assert.ok(sourceLabel,'the actual inner source radiogroup has a label reference');
+assert.ok(sourceHtml.includes('id="'+sourceLabel+'"'),'the source label reference targets the rendered hidden label');
+assert.ok(sourceHtml.includes('Download source'),'the source group has its specific accessible name');
+
+radio=nodes(tree).find(node=>node.type===M.Radio.Group);radio.props.onChange('missing-provider');assert.equal(sourceCalls.length,0,'unknown source cannot change selection');
+radio.props.onChange('api.nzb.life');assert.deepEqual(sourceCalls,['api.nzb.life']);assert.equal(opened,false,'source selection collapses the in-sheet list');
+opened=true;tree=drawSource();tree.props.onKeyDown({key:'Home',target:{type:'radio',value:sourceValue},preventDefault(){},stopPropagation(){},currentTarget:{querySelectorAll:()=>sources.map(value=>({value,focus:()=>keyboardFocus=value}))}});
+assert.equal(sourceValue,'api.nzbgeek.info');assert.equal(keyboardFocus,sourceValue);assert.equal(opened,true,'source arrow/Home selection remains open');
+radio=nodes(drawSource()).find(node=>node.type===M.Radio.Group);count=sourceCalls.length;radio.props.onChange(sourceValue);assert.equal(sourceCalls.length,count,'reselecting source does not repeat its callback');
+opened=true;tree=drawSource();tree.props.onKeyDown({key:'Escape',target:{},preventDefault(){},stopPropagation(){}});assert.equal(opened,false);
+const single=out.DownloadSourcePicker({sources:['Only source'],value:'Only source',onChange(){}});assert.match(render(out.ReleaseChoicePicker(single.props)),/1 source available · Change source/);
+console.log('Source chooser: exact source values, deduplication, enabled callbacks, no-op reselection, Home/focus/Escape and source-specific labels passed.');
+console.log('Release chooser: full-width in-sheet files at every width, exact checked identity, readable disabled sample, keyboard/focus/Escape and separate full-width filename row passed.');

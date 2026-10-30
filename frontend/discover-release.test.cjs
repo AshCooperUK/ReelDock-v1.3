@@ -1,0 +1,36 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const out={},jsx=(type,props)=>typeof type==='function'?type(props||{}):({type,props:props||{}});
+const react={memo:f=>f,useState:v=>[typeof v==='boolean'?true:v,()=>{}],useRef:()=>({current:null}),useEffect:()=>{}};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/Discover.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,require:n=>n.endsWith('/mediaDuration')?require('./media-duration-test-helper.cjs')():n==='react'?react:n==='react/jsx-runtime'?{jsx,jsxs:jsx}:n==='./HoverCard'?{__esModule:true,default:()=>null,useCardHover:()=>({anchor:{current:null},open:false,show:()=>{},hide:()=>{},failed:[],failImage:()=>{}}),titleHover:()=>({})}:new Proxy({},{get:(_,key)=>key==='__esModule'?false:key}),Date,Intl});
+const now=new Date('2026-10-10T12:00:00Z');
+assert.equal(out.isUnreleased('2026-10-12',undefined,now),true);
+for(const date of ['2026-10-05','2026-10-10','2026-02-30','invalid',undefined])assert.equal(out.isUnreleased(date,undefined,now),false);
+assert.equal(out.isUnreleased(undefined,'2027',now),true);
+assert.equal(out.isUnreleased(undefined,'2026',now),false);
+assert.equal(out.isUnreleased('2026-07-11',undefined,new Date('2026-07-10T23:30:00Z')),false);
+function nodes(tree){if(!tree||typeof tree!=='object')return [];if(Array.isArray(tree))return tree.flatMap(nodes);return [tree,...nodes(tree.props?.children),...nodes(tree.props?.art),...nodes(tree.props?.actions)];}
+let toggled=false;const episode={id:1,number:10,season:1,name:'Future episode',airdate:'2099-10-12'};
+const tree=out.SeasonBlock({number:1,episodes:[episode],count:1,selected:new Set([1]),onSeason:()=>{},onToggle:()=>{toggled=true;}});
+const row=nodes(tree).filter(n=>n.type==='Paper'&&nodes(n).some(child=>child.props?.label==='Future episode')).at(-1);
+assert.ok(row,'the episode retains its own Paper row');assert.equal(nodes(row).find(n=>n.props?.label==='Future episode').props.checked,true,'the selection remains checked');
+assert.ok(nodes(row).some(n=>n.props.children==='Not released yet'));
+const checkbox=nodes(row).find(n=>n.props.label==='Future episode');assert.ok(!checkbox.props.disabled);checkbox.props.onCheckedChange();assert.ok(toggled);
+const collection=out.Collection({group:{title:'Search',items:[{id:'future',kind:'movie',title:'Future',year:'2099'},{id:'unknown',kind:'movie',title:'Unknown'}]},layout:'grid',onSelect:()=>{}});
+assert.equal(nodes(collection).filter(n=>n.type==='MediaCard'&&n.props.status==='Not released yet').length,1);
+console.log('Discover future dates, UK midnight, unknown dates and selectable warning cards passed.');
+const special={id:2,season:1,number:null,name:'Aftermath'};
+assert.equal(out.selectableEpisode(special),false);
+assert.equal(out.selectableEpisode(episode),true);
+const mixed=nodes(out.SeasonBlock({number:1,episodes:[episode,special],count:1,selected:new Set([1]),onSeason:()=>{},onToggle:()=>{}}));
+assert.equal(mixed.find(n=>n.props?.label==='Select season 1').props.checked,true);
+const specialRow=mixed.filter(n=>n.type==='Paper'&&nodes(n).some(child=>child.props?.label==='Aftermath')).at(-1);
+assert.equal(nodes(specialRow).find(n=>n.props.label==='Aftermath').props.disabled,true);
+let requestedSpecial=null;
+const specialTree=nodes(out.SeasonBlock({number:1,episodes:[special],count:0,selected:new Set(),onSeason:()=>{},onToggle:()=>{},onSpecial:e=>{requestedSpecial=e;}}));
+const specialAction=specialTree.find(n=>n.props.children==='Search releases');
+assert.ok(specialAction);specialAction.props.onClick();assert.equal(requestedSpecial.id,2);
+assert.equal(specialTree.some(n=>n.type==='label'&&nodes(n).some(child=>child===specialAction)),false);
+
+assert.equal(out.episodeGroup({season:3,number:null}),0);
+assert.equal(out.episodeGroup({season:3,number:2,type:'significant_special'}),0);
+assert.equal(out.episodeGroup({season:3,number:2}),3);

@@ -1,0 +1,15 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const out={},effects=[],calls=[],jsx=(type,props)=>({type,props:props||{}});
+const react={memo:f=>f,useState:v=>[v,()=>{}],useRef:()=>({current:null}),useEffect:f=>effects.push(f),useCallback:f=>f};
+const api=async url=>{calls.push(url);return {items:[],total:null,nextOffset:null};};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/Discover.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,require:n=>n==='react'?react:n==='react/jsx-runtime'?{jsx,jsxs:jsx}:n==='./api'?{api}:{},Date,Intl,AbortController,URLSearchParams,window:{addEventListener:()=>{},removeEventListener:()=>{}}});
+const movie={title:'Film',year:'1994',kind:'movie'};
+assert.equal(out.youtubeMediaQuery(movie),'Film 1994 full movie');
+assert.equal(out.youtubeMediaQuery({title:'Example Show',kind:'show'},{season:3,number:9,name:'Episode title'}),'Example Show S03E09 Episode title');
+assert.ok(out.youtubeMediaQuery({title:'X'.repeat(400),kind:'movie'}).length<=160);
+out.ProviderSearch({section:'YouTube videos',layout:'grid',initialQuery:'Example Show S03E09',onSelect:()=>{}});
+effects.forEach(f=>f());
+assert.equal(calls.length,1);
+const url=new URL(calls[0],'http://localhost');assert.equal(url.searchParams.get('provider'),'youtube');assert.equal(url.searchParams.get('q'),'Example Show S03E09');
+assert.ok(calls.every(url=>!url.includes('/acquire')));
+console.log('YouTube source query construction and search without automatic acquisition passed.');

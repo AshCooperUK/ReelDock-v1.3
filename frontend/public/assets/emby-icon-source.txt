@@ -1,0 +1,4 @@
+Emby logo, used to identify the Emby integration.
+Source: https://raw.githubusercontent.com/MediaBrowser/Emby.Resources/master/images/Logos/logoicon114.png
+Emby: https://emby.media/
+Logo belongs to Emby.

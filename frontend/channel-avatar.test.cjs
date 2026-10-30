@@ -1,0 +1,9 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript'),React=require('react'),M=require('@mantine/core'),{renderToStaticMarkup}=require('react-dom/server');
+function load(file,imports={}){const out={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/'+file,'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,require:name=>imports[name]||require(name)});return out;}
+const live=load('LiveArtwork.tsx'),avatar=load('ChannelAvatar.tsx',{'./LiveArtwork':live}).default;
+for(const scheme of ['light','dark'])for(const src of ['/channel-logo.png',undefined]){
+ const detail=avatar({src,detail:true});assert.equal(detail.props.style.aspectRatio,'1');assert.equal(detail.props.w,'100%');assert.equal(detail.props.style.transform,undefined);const html=renderToStaticMarkup(React.createElement(M.MantineProvider,{forceColorScheme:scheme},detail));assert.equal((html.match(/<img\b/g)||[]).length,src?1:0);assert.match(html,/data-channel-detail-art/);assert.doesNotMatch(html,/mantine-Avatar-root|scale\(/);if(src)assert.match(html,/object-fit:contain/,'the entire source logo fits the shared header slot');
+}
+const regular=avatar({src:'/channel.png'});assert.equal(regular.props.size,32);assert.equal(regular.props.radius,'xl','existing small identity avatars keep their normal dimensions');assert.equal(regular.props.children.props.fit,undefined,'ordinary artwork keeps the default cover behavior');
+assert.doesNotMatch(fs.readFileSync(__dirname+'/src/ChannelDetail.tsx','utf8'),/scale\(|transformOrigin/);
+console.log('Channel header artwork: one full square contained logo, no enlargement/circular clipping, scheme-aware fallback and unchanged32px identity avatars passed.');
