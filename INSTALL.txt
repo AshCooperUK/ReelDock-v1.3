@@ -40,6 +40,8 @@ Edit these consistently in all service mounts and storage preparation before
 installing somewhere else. REELDOCK_HOST_ROOT must match the media host path.
 The storage helper creates the directories and permissions before the VPN,
 web and worker start. Do not add blank Host volume entries in the CasaOS editor.
+Keep the long-form volume entries and leave web/worker container names unset;
+CasaOS otherwise changes the read-only flags or adds incompatible hostnames.
 This template describes a fresh installation. Keep the existing storage and
 VPN volume configuration when updating an installation using named volumes.
 Source builds use compose.yaml and its REELDOCK_INSTALL_DIR setting instead.

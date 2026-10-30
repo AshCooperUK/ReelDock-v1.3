@@ -1,0 +1,39 @@
+name: Check CasaOS installer
+on:
+  push:
+    branches: [main]
+    paths:
+      - compose.casaos.yaml
+      - tests/test_deployment_config.py
+      - .github/workflows/installer-checks.yml
+  pull_request:
+    paths:
+      - compose.casaos.yaml
+      - tests/test_deployment_config.py
+      - .github/workflows/installer-checks.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  installer:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install test dependencies
+        run: pip install -r requirements.txt pyyaml==6.0.3
+      - name: Obtain setup-page assets from the verified public image
+        env:
+          IMAGE: ghcr.io/ashcooperuk/reeldock-v1.3@sha256:6757c592416afb0a77a66273722e61bcea49bd06b4248eacabb2cfa2df52818c
+        run: |
+          docker pull "$IMAGE"
+          task_container=$(docker create --network none --entrypoint /bin/true "$IMAGE")
+          trap 'docker rm "$task_container"' EXIT
+          docker cp "$task_container:/app/frontend/dist" frontend/dist
+      - name: Verify installer contracts and Compose parsing
+        run: |
+          python -m unittest tests.test_deployment_config -v
+          docker compose -f compose.casaos.yaml config --quiet

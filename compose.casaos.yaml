@@ -20,9 +20,16 @@ x-app-environment: &app-environment
   GOOGLE_CLIENT_SECRET: ""
 
 x-app-volumes: &app-volumes
-  - /DATA/AppData/reeldock-v13/vpn-run:/vpn-run:ro
-  - /DATA/Media/reeldock-v13/data:/reeldock
-  - /DATA/AppData/reeldock-v13/data:/data
+  - type: bind
+    source: /DATA/AppData/reeldock-v13/vpn-run
+    target: /vpn-run
+    read_only: true
+  - type: bind
+    source: /DATA/Media/reeldock-v13/data
+    target: /reeldock
+  - type: bind
+    source: /DATA/AppData/reeldock-v13/data
+    target: /data
 
 services:
   vpn:
@@ -36,8 +43,12 @@ services:
     environment:
       REELDOCK_PRIVADO_API_KEY: "${REELDOCK_PRIVADO_API_KEY:-}"
     volumes:
-      - /DATA/AppData/reeldock-v13/vpn-state:/vpn-state
-      - /DATA/AppData/reeldock-v13/vpn-run:/vpn-run
+      - type: bind
+        source: /DATA/AppData/reeldock-v13/vpn-state
+        target: /vpn-state
+      - type: bind
+        source: /DATA/AppData/reeldock-v13/vpn-run
+        target: /vpn-run
     depends_on:
       prepare-storage:
         condition: service_completed_successfully
@@ -52,7 +63,6 @@ services:
       start_period: 10s
   web:
     image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
-    container_name: reeldock-v13-web
     restart: unless-stopped
     network_mode: "service:vpn"
     environment: *app-environment
@@ -72,7 +82,6 @@ services:
 
   worker:
     image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
-    container_name: reeldock-v13-worker
     restart: unless-stopped
     command: ["python", "-m", "backend.worker"]
     network_mode: "service:vpn"
@@ -113,15 +122,23 @@ services:
   prepare-storage:
     image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
     user: "0:0"
-    restart: "no"
+    restart: on-failure:1
     entrypoint: ["python", "-c"]
     command:
       - "import os; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700)"
     volumes:
-      - /DATA/AppData/reeldock-v13/vpn-run:/vpn-run
-      - /DATA/AppData/reeldock-v13/vpn-state:/vpn-state
-      - /DATA/Media/reeldock-v13/data:/reeldock
-      - /DATA/AppData/reeldock-v13/data:/data
+      - type: bind
+        source: /DATA/AppData/reeldock-v13/vpn-run
+        target: /vpn-run
+      - type: bind
+        source: /DATA/AppData/reeldock-v13/vpn-state
+        target: /vpn-state
+      - type: bind
+        source: /DATA/Media/reeldock-v13/data
+        target: /reeldock
+      - type: bind
+        source: /DATA/AppData/reeldock-v13/data
+        target: /data
     healthcheck:
       disable: true
     security_opt: ["no-new-privileges:true"]

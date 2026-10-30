@@ -39,13 +39,18 @@ class DeploymentConfigTests(unittest.TestCase):
         return yaml.safe_load(text.replace(PRIVADO_TEMPLATE, ''))
 
     def host_paths(self, service):
-        return [volume.split(':', 1)[0] for volume in service.get('volumes', [])]
+        return [volume['source'] if isinstance(volume,dict) else volume.split(':', 1)[0]
+                for volume in service.get('volumes', [])]
 
     def check_isolated(self, config, image=LOCAL_IMAGE, media=LOCAL / 'media'):
         self.assertEqual(config['name'], 'reeldock-v13')
         services = config['services']
         for role in ('vpn','web','worker'):
-            self.assertEqual(services[role]['container_name'], 'reeldock-v13-'+role)
+            if image==RELEASE_IMAGE and role in ('web','worker'):
+                self.assertNotIn('container_name',services[role], 'CasaOS copies explicit container names into incompatible shared-network hostnames')
+                self.assertNotIn('hostname',services[role])
+            else:
+                self.assertEqual(services[role]['container_name'], 'reeldock-v13-'+role)
         names = {config['name']} | {s.get('container_name') for s in services.values()}
         self.assertFalse(names & OTHER_NAMES)
         allowed={'vpn-run','vpn-state',str(media),*(str(LOCAL / child) for child in ('data','media/YouTube','media/M3U','vpn-run','vpn-state'))}
@@ -81,35 +86,36 @@ class DeploymentConfigTests(unittest.TestCase):
                        'REELDOCK_DOWNLOAD_BASE', 'REELDOCK_STORAGE_LOCATIONS'):
             self.assertNotIn(legacy, env)
         for role in ('web', 'worker'):
-            self.assertEqual(services[role]['volumes'], [str(LOCAL / 'vpn-run')+':/vpn-run:ro',
-                             str(CASAOS_MEDIA)+':/reeldock', str(LOCAL / 'data')+':/data'])
+            self.assertEqual(services[role]['volumes'], [dict(type='bind',source=str(LOCAL / 'vpn-run'),target='/vpn-run',read_only=True),
+                             dict(type='bind',source=str(CASAOS_MEDIA),target='/reeldock'),
+                             dict(type='bind',source=str(LOCAL / 'data'),target='/data')])
             self.assertEqual(raw['services'][role]['volumes'], services[role]['volumes'])
-            self.assertNotIn('/vpn-state', [volume.split(':')[1] for volume in services[role]['volumes']])
+            self.assertNotIn('/vpn-state', [volume['target'] for volume in services[role]['volumes']])
         for role, service in raw['services'].items():
             for volume in service['volumes']:
-                # CasaOS edits host/container/permission fields independently.
-                source, target, *mode = volume.split(':')
+                # CasaOS preserves long-form bind attributes; short form loses :ro.
+                self.assertIsInstance(volume,dict, 'Every CasaOS mount survives its object-based importer')
+                self.assertEqual(volume['type'],'bind')
+                source,target=volume['source'],volume['target']
                 self.assertTrue(source and Path(source).is_absolute(), (role, volume))
                 self.assertTrue(target.startswith('/'), (role, volume))
                 self.assertNotIn('${', source, 'CasaOS mounts must not require interpolation')
-                self.assertIn(mode, ([], ['ro']))
-                edited = dict(source=source, target=target, read_only=mode == ['ro'])
-                restored = edited['source']+':'+edited['target']+(':ro' if edited['read_only'] else '')
-                self.assertEqual(restored, volume, 'Host/container/permission editor roundtrip keeps the complete mount')
-        self.assertEqual(services['vpn']['volumes'], [str(LOCAL / 'vpn-state')+':/vpn-state',
-                                                     str(LOCAL / 'vpn-run')+':/vpn-run'])
+                self.assertIsInstance(volume.get('read_only',False),bool)
+        self.assertEqual(services['vpn']['volumes'], [dict(type='bind',source=str(LOCAL / 'vpn-state'),target='/vpn-state'),
+                                                     dict(type='bind',source=str(LOCAL / 'vpn-run'),target='/vpn-run')])
         self.assertEqual(services['vpn']['depends_on']['prepare-storage']['condition'], 'service_completed_successfully')
         self.assertEqual(raw['services']['web']['environment']['REELDOCK_HOST_ROOT'], str(CASAOS_MEDIA))
         self.assertEqual(self.load('compose.casaos.yaml', Path('/srv/reeldock-fixture')), config,
                          'The CasaOS template keeps explicit host paths independent of source-build overrides')
         prepare = services['prepare-storage']
         self.assertEqual(prepare['command'], ["import os; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700)"])
-        self.assertEqual(prepare['volumes'], [str(LOCAL / 'vpn-run')+':/vpn-run',
-                         str(LOCAL / 'vpn-state')+':/vpn-state', str(CASAOS_MEDIA)+':/reeldock',
-                         str(LOCAL / 'data')+':/data'])
+        self.assertEqual(prepare['volumes'], [dict(type='bind',source=str(LOCAL / 'vpn-run'),target='/vpn-run'),
+                         dict(type='bind',source=str(LOCAL / 'vpn-state'),target='/vpn-state'),
+                         dict(type='bind',source=str(CASAOS_MEDIA),target='/reeldock'),
+                         dict(type='bind',source=str(LOCAL / 'data'),target='/data')])
         self.assertEqual(prepare['cap_add'], ['CHOWN', 'FOWNER'])
         self.assertEqual(prepare['user'], '0:0')
-        self.assertEqual(prepare['restart'], 'no')
+        self.assertEqual(prepare['restart'], 'on-failure:1', 'CasaOS rewrites no to unless-stopped; a bounded failure retry preserves successful one-off completion')
         self.assertTrue(prepare['healthcheck']['disable'])
         for role, memory in (('web', '1GB'), ('worker', '2GB')):
             self.assertEqual(services[role]['deploy']['resources']['limits'], {'memory': memory, 'cpus': '1.00'})
@@ -219,7 +225,8 @@ class DeploymentConfigTests(unittest.TestCase):
                     self.assertEqual(app['network_mode'],'service:vpn');self.assertNotIn('ports',app)
                     self.assertEqual(app['depends_on']['vpn']['condition'],'service_healthy')
                     self.assertEqual(app['depends_on']['prepare-storage']['condition'],'service_completed_successfully')
-                    self.assertIn((str(LOCAL / 'vpn-run') if name=='compose.casaos.yaml' else 'vpn-run')+':/vpn-run:ro',app['volumes'])
+                    expected_run=dict(type='bind',source=str(LOCAL / 'vpn-run'),target='/vpn-run',read_only=True) if name=='compose.casaos.yaml' else 'vpn-run:/vpn-run:ro'
+                    self.assertIn(expected_run,app['volumes'])
                     self.assertEqual(app['environment']['REELDOCK_VPN_TRANSPORT'],'1')
                     self.assertEqual(app['environment']['LD_PRELOAD'],'/usr/local/lib/reeldock_socket_mark.so')
                 self.assertEqual(services['worker']['depends_on']['web']['condition'],'service_healthy')
