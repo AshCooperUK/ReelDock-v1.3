@@ -142,7 +142,8 @@ const movies=Array.from({length:3},(_,i)=>({...sample(),id:'movie:'+i})),more=[]
 const grouped=presentation.app.MediaResults({items:[...movies,sample('show'),sample('video')],layout:'tiles',searched:true,source:'all',today:'2026-10-30',onOpen(){},limits:{Movies:1},onMore:group=>more.push(group)});
 assert.deepEqual(nodes(grouped).filter(node=>node.props?.component==='section').map(node=>node.props['aria-label']),['Movies','TV Shows','YouTube']);
 assert.equal(nodes(grouped).filter(node=>node.type===presentation.app.MediaTile).length,3,'the existing per-category search page limit remains effective');
-nodes(grouped).find(node=>node.props?.['aria-label']==='Load more Movies').props.onClick();assert.deepEqual(more,['Movies']);
+const automatic=nodes(grouped).find(node=>node.type===presentation.app.AutoMoreResults);assert.ok(automatic);automatic.props.onMore();assert.deepEqual(more,['Movies']);
+assert.ok(!nodes(grouped).some(node=>node.props?.['aria-label']==='Load more Movies'),'search pagination no longer mounts a manual button');
 
 // Inspect the scoped cascade rather than a string snapshot: only intentional
 // hover or keyboard focus may expose the otherwise hidden title. Root's real

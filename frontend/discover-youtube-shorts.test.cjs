@@ -3,7 +3,7 @@ const React=require('react'),Mantine=require('@mantine/core'),{renderToStaticMar
 const jsx=(type,props,key)=>({type,props:props||{},key});
 const nodes=node=>node==null?[]:Array.isArray(node)?node.flatMap(nodes):typeof node==='object'?[node,...nodes(node.props?.children)]:[];
 const tick=()=>new Promise(setImmediate);
-function compile(file,modules={},globals={}){const out={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/'+file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,Map,Set,Date,Intl,URLSearchParams,AbortController,DOMException,Event,...globals,require:name=>modules[name]||new Proxy({},{get:(_,key)=>key})});return out;}
+function compile(file,modules={},globals={}){const out={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/'+file,'utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,Map,Set,Date,Intl,URLSearchParams,AbortController,DOMException,Error,Event,...globals,require:name=>modules[name]||new Proxy({},{get:(_,key)=>key})});return out;}
 function hooks(){
  const slots=[];let index=0,pending=[],updates=[];
  const same=(a,b)=>a&&b&&a.length===b.length&&a.every((v,i)=>Object.is(v,b[i]));
@@ -98,6 +98,27 @@ const change=(s,value)=>{toggle(s.draw()).props.onChange({currentTarget:{checked
  }
  tree=s.chooseSource('subscriptions');tree=s.search('shared query');assert.equal(toggle(tree),undefined,'global search has no source-specific switch');
  assert.match(last(s).url,/^\/api\/view-media\/search\?/);assert.equal(params(last(s)).has('show_shorts'),false);
+ const fixed=page(Array.from({length:60},(_,index)=>'saved-'+index),null,{source:'global',completeSet:true,searchSnapshot:'fixed-frame'});
+ tree=await s.settle(last(s),fixed);
+ assert.equal(typeof results(s,tree).onMore,'function','complete saved search frames also reveal bounded local batches');
+ const beforeReveal=s.calls.length,originalActions=Array.from(results(s,tree).items,item=>item.action);
+ results(s,tree).onMore('YouTube');tree=s.draw();assert.equal(results(s,tree).limits.YouTube,48);
+ s.edge();s.draw();assert.equal(s.calls.length,beforeReveal,'cached reveal never invokes network paging or provider search');
+ nodes(tree).find(node=>node.props?.['aria-label']==='Search media type').props.onChange({target:{value:'movies'}});tree=s.draw();assert.equal(results(s,tree).items.length,0);
+ nodes(tree).find(node=>node.props?.['aria-label']==='Search media type').props.onChange({target:{value:'youtube'}});tree=s.draw();
+ assert.equal(results(s,tree).limits.YouTube,48,'client-side filters keep the already revealed limit');
+ assert.deepEqual(Array.from(results(s,tree).items,item=>item.action),originalActions,'filtering retains every exact download action');assert.equal(s.calls.length,beforeReveal);
+ results(s,tree).onOpen(results(s,tree).items[0]);tree=s.draw();assert.equal(results(s,tree).loading,true,'an open result sheet pauses underlying search reveal');
+ const dialog=nodes(tree).find(node=>node.props?.open&&node.props.onOpenChange);assert.ok(dialog);dialog.props.onOpenChange(false);tree=s.draw();assert.equal(results(s,tree).loading,false);
+ const oldSearch=last(s);tree=s.search('another query');assert.equal(oldSearch.signal.aborted,true);
+ tree=await s.settle(last(s),{...fixed,searchSnapshot:'another-frame'});assert.equal(results(s,tree).limits.YouTube,undefined,'a new query resets local reveal limits');
+ results(s,tree).onMore('YouTube');tree=s.draw();
+ nodes(tree).find(node=>node.props?.['aria-label']==='Movie sort order').props.onChange({target:{value:'title'}});tree=s.draw();assert.equal(params(last(s)).get('sort'),'title');
+ tree=await s.settle(last(s),{...fixed,items:[...fixed.items].reverse(),searchSnapshot:'sorted-frame'});
+ assert.equal(results(s,tree).limits.YouTube,undefined,'a new sort resets local reveal limits');assert.equal(results(s,tree).items[0].id,'saved-59','server ordering remains authoritative');
+ tree=s.search('failed query');last(s).reject(new Error('Fixture search unavailable.'));await tick();tree=s.draw();
+ const failure=nodes(tree).find(node=>node.props?.message==='Fixture search unavailable.');assert.ok(failure,'genuine search failures retain the shared error message');
+ const retry=nodes(failure.props.actions).find(node=>node.props?.children==='Try again');assert.ok(retry);const failures=s.calls.length;retry.props.onClick();s.draw();assert.equal(s.calls.length,failures+1,'actual failures retain an explicit retry action');
  assert.equal(s.calls.some(call=>call.body!==undefined),false,'filtering performs GETs only');assert.deepEqual(s.storageWrites,[],'no settings, channel preference or browser preference writes');
  s.close();assert.equal(last(s).signal.aborted,true);console.log('Discover YouTube Shorts: default-off Mantine44px switch, strict0/1 head+prefetch+scroll queries, coalescing, stale-generation/cache/selection/hero reset and isolated GET-only scopes passed.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

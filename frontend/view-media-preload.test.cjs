@@ -34,7 +34,53 @@ for(const source of ['discover','vod','local','subscriptions'])for(const layout 
 
 const {createPagePreloader}=compiled('pagePreloader.ts');
 const page=(id,nextOffset=null)=>({source:'global',media:'all',items:[{id}],nextOffset,label:'Search results'});
+// Exercise the actual pagination closure with the real API/preloader, without
+// mounting unrelated detail surfaces or making any network requests.
+const viewSource=ts.createSourceFile('ViewMedia.tsx',fs.readFileSync(__dirname+'/src/viewMedia/ViewMedia.tsx','utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);
+let moreSource;
+function findMore(node){if(ts.isFunctionDeclaration(node)&&node.name?.text==='more')moreSource=node.getText(viewSource);ts.forEachChild(node,findMore);}
+findMore(viewSource);assert.ok(moreSource,'regression runs the production more() closure');
+function pagination(fetch){
+ const notices=[],errors=[],busy=[],updates=[],plain={};
+ vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/plainNames.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:plain});
+ const apiExports={};
+ vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/api.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:apiExports,Error,AbortController,FormData,Date,setTimeout,clearTimeout,fetch,require:name=>name==='./plainNames'?plain:{notify:value=>notices.push(value)}});
+ const preloader=createPagePreloader((url,signal)=>apiExports.api(url,signal));
+ const refresh=compiled('refresh.ts');
+ const context={exports:{},Error,globalSearch:false,busy:false,paging:{current:false},page:page('existing',1),nextUrl:'/next-a',generation:{current:1},controller:{current:new AbortController()},nextPage:{current:preloader},source:'discover',scopeKey:'fixture',pageCache:{current:new Map()},...refresh,
+  setBusy:value=>busy.push(value),setError:value=>errors.push(value),setPage:value=>{context.page=typeof value==='function'?value(context.page):value;updates.push(context.page);},setRevision:()=>assert.fail('ordinary paging must not reset the catalogue')};
+ vm.runInNewContext(ts.transpileModule(moreSource+'\nexports.more=more;',{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,context);
+ return {context,preloader,more:context.exports.more,notices,errors,busy,updates};
+}
 async function run(){
+ const calls=[];
+ const replaced=pagination((url,{signal})=>new Promise((resolve,reject)=>{calls.push({url,signal,resolve});signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true});}));
+ const parent=replaced.context.controller.current;
+ const childWarm=replaced.preloader.load('/next-a',parent.signal),warmCancelled=assert.rejects(childWarm,{name:'AbortError'});
+ const consuming=replaced.more();assert.equal(calls.length,1,'demand shares the already warming API read');
+ const next=replaced.preloader.load('/next-b',parent.signal);
+ await consuming;await warmCancelled;
+ assert.equal(parent.signal.aborted,false,'replacement cancels the preloader child, not the page controller');
+ assert.equal(calls[0].signal.aborted,true,'the replaced API transport is actually cancelled');
+ assert.deepEqual(replaced.errors,[''],'expected child cancellation never becomes a Discover error balloon');
+ assert.equal(replaced.notices.length,0,'the shared API also stays quiet for this cancellation');
+ assert.equal(replaced.updates.length,0,'cancelled pages append no stale cards');
+ assert.equal(replaced.context.paging.current,false,'finally releases the paging guard after cancellation');
+ assert.deepEqual(replaced.busy,[true,false],'finally clears the loading state after cancellation');
+ replaced.context.nextUrl='/next-b';
+ const continued=replaced.more();assert.equal(calls.length,2,'later demand consumes the replacement without another fetch');
+ calls[1].resolve({ok:true,status:200,json:async()=>page('replacement'),headers:{get:()=>null}});
+ await next;await continued;
+ assert.equal(replaced.context.page.items.map(item=>item.id).join(','),'existing,replacement','browsing can append the replacement page normally');
+ assert.equal(replaced.context.paging.current,false);replaced.preloader.clear();parent.abort();
+
+ const failed=pagination(async()=>{throw new Error('Fixture connection failed.');});
+ await failed.more();
+ assert.deepEqual(failed.errors,['','Fixture connection failed.'],'genuine transport errors still reach Discover');
+ assert.equal(failed.notices.length,1,'genuine API failures retain the shared notification');
+ assert.equal(failed.notices[0].message,'Fixture connection failed.');
+ assert.equal(failed.context.paging.current,false);assert.deepEqual(failed.busy,[true,false]);failed.preloader.clear();failed.context.controller.current.abort();
+
  // Download controls and status hooks cannot mount until public registration succeeds.
  const result={id:'youtube:abcdefghijk',kind:'video',title:'Public clip',date:'2026-10-01',dateApproximate:true,channel:'Creator',channelId:'UC'+'r'.repeat(22),action:{type:'youtube',id:'abcdefghijk'}};
  let stateIndex=0,effects=[],states=[],complete,fail;const requests=[];
@@ -76,6 +122,6 @@ async function run(){
  let pendingSignal;const aborted=new AbortController(),cancel=createPagePreloader(async(url,signal)=>{pendingSignal=signal;return new Promise((resolve,reject)=>signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError'))));});
  const pending=cancel.load('/pending',aborted.signal);const stopped=assert.rejects(pending,{name:'AbortError'});aborted.abort();await stopped;assert.equal(pendingSignal.aborted,true);
  buffer.clear();staged.clear();switched.clear();retry.clear();cancel.clear();
- console.log('View Media: Mantine search cards, one-batch preload, shared demand, partial progress, retry and scope cancellation passed.');
+ console.log('View Media: Mantine search cards, one-batch preload, shared demand, partial progress, retry, quiet child cancellation and genuine errors passed.');
 }
 run().catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,11 +1,37 @@
-/** No intersection-triggered chaining: each batch needs a new downward scroll. */
 type ScrollTarget=Window|HTMLElement;
+
+/** Observe cached result batches against their actual scrolling ancestor. */
+export function autoPagingRoot(element:HTMLElement):HTMLElement|null {
+  const document=element.ownerDocument;
+  for(let parent=element.parentElement;parent&&parent!==document.body&&parent!==document.documentElement;parent=parent.parentElement){
+    if(parent.matches('[data-ui-dialog-scroll]')||/auto|scroll|overlay/.test(document.defaultView?.getComputedStyle(parent).overflowY||''))return parent;
+  }
+  return null;
+}
+
+export function observeAutoPaging(element:HTMLElement,load:()=>void) {
+  const root=autoPagingRoot(element),view=element.ownerDocument.defaultView;
+  let active=true,consumed=false;
+  const consume=()=>{if(active&&!consumed){consumed=true;load();}};
+  if(typeof IntersectionObserver==='undefined'){
+    const target=root||view;
+    if(!target)return()=>{active=false;};
+    const check=()=>{const bounds=element.getBoundingClientRect(),top=root?.getBoundingClientRect().top||0,bottom=root?.getBoundingClientRect().bottom??view?.innerHeight??0;if(bounds.top<=bottom+180&&bounds.bottom>=top-180)consume();};
+    target.addEventListener('scroll',check,{passive:true});view?.addEventListener('resize',check);check();
+    return()=>{active=false;target.removeEventListener('scroll',check);view?.removeEventListener('resize',check);};
+  }
+  const observer=new IntersectionObserver(entries=>{if(entries.some(entry=>entry.isIntersecting))consume();},{root,rootMargin:'180px 0px'});
+  observer.observe(element);
+  return()=>{active=false;observer.disconnect();};
+}
+
 const wheelTimes=new WeakMap<ScrollTarget,number>();
 export function trackPagingMomentum(target: ScrollTarget, now:()=>number=Date.now) {
   const wheel=()=>wheelTimes.set(target,now());
   target.addEventListener('wheel',wheel as EventListener,{passive:true});
   return()=>target.removeEventListener('wheel',wheel as EventListener);
 }
+/** Network browse batches still require a fresh downward gesture. */
 export function attachScrollPaging(target: ScrollTarget, edge: () => number, load: () => void, now:()=>number=Date.now) {
   const position=()=> 'scrollY' in target?target.scrollY:target.scrollTop;
   const height=()=> 'innerHeight' in target?target.innerHeight:target.clientHeight;

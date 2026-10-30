@@ -1,7 +1,7 @@
 import surfaces from '../components/MediaSurfaces.module.css';
 import { retargetLocalCard, type LibraryChange } from './localRename';
 import { NotificationMessage } from '../notifications';
-import { ActionIcon, AspectRatio, Badge, Box, Card, Center, Grid, Group, Image, Paper, SimpleGrid, Stack, Switch, Text, Title, UnstyledButton } from '@mantine/core';
+import { ActionIcon, AspectRatio, Badge, Box, Card, Center, Grid, Group, Image, Paper, SimpleGrid, Stack, Switch, Text, Title, UnstyledButton, VisuallyHidden } from '@mantine/core';
 import { SelectField as NativeSelect } from '../components/SelectField';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Film, Grid2X2, LayoutGrid, List, Tv, X, Youtube } from 'lucide-react';
@@ -30,7 +30,7 @@ import styles from './MediaBrowse.module.css';
 import tileStyles from './ArtworkTiles.module.css';
 import { mediaCardLength } from '../mediaDuration';
 import { mediaDate } from '../mediaDate';
-import { attachScrollPaging, trackPagingMomentum } from './scrollPaging';
+import { attachScrollPaging, observeAutoPaging, trackPagingMomentum } from './scrollPaging';
 import { createPagePreloader } from './pagePreloader';
 import { sortGroups, orderCards, searchSections, searchPage, searchPageSize } from './ordering';
 import { refreshDelay, refreshedPage, mergeCards, pendingPage } from './refresh';
@@ -65,11 +65,17 @@ export const MediaTile = memo(function MediaTile({item,layout,upcoming,label,sea
    <HoverCard info={hoverInfo} hover={hover}/>
   </BrowseCard>;
 });
+export function AutoMoreResults({enabled,batch,onMore}:{enabled:boolean;batch:string;onMore:()=>void}) {
+  const edge=useRef<HTMLDivElement>(null),latest=useRef(onMore);latest.current=onMore;
+  useEffect(()=>{if(!enabled||!edge.current)return;return observeAutoPaging(edge.current,()=>latest.current());},[enabled,batch]);
+  return <Box ref={edge} h={1} data-auto-results-edge aria-hidden="true"/>;
+}
+
 export function MediaResults({items,layout,searched,source,today,onOpen,limits={},onMore,loading=false}:{items:MediaCard[];layout:MediaLayout;searched:boolean;source:string;today:string;onOpen:(item:MediaCard)=>void;limits?:Record<string,number>;onMore?:(group:string)=>void;loading?:boolean}) {
   const cards=(rows:MediaCard[])=><SimpleGrid component="ul" m={0} p={0} style={{listStyle:'none'}} cols={layout==='list'?1:layout==='tiles'?{base:2,sm:3,md:4,lg:5,xl:6}:{base:2,md:3,xl:4}} spacing={layout==='tiles'?'xs':'md'}>{rows.map(item=><MediaTile key={item.id} item={item} layout={layout} searched={searched} upcoming={!!((searched||source==='discover')&&item.action.type==='discover'&&item.releaseDate&&item.releaseDate>today)} label={labels[item.kind]||''} onOpen={onOpen}/>)}</SimpleGrid>;
   return searched?<Stack gap="xl">{searchSections(items).map(section=>{
     const page=onMore?searchPage(section.items,limits[section.label]):{items:section.items,hasMore:false};
-    return <Stack component="section" gap="md" aria-label={section.label} key={section.label}><Title order={3}>{section.label}</Title>{cards(page.items)}{page.hasMore&&<Group><Button variant="secondary" aria-label={'Load more '+section.label} disabled={loading} onClick={()=>onMore?.(section.label)}>Load more</Button></Group>}</Stack>;
+    return <Stack component="section" gap="md" aria-label={section.label} aria-busy={loading} key={section.label}><Title order={3}>{section.label}</Title>{cards(page.items)}<VisuallyHidden role="status" aria-live="polite" aria-atomic="true">{page.items.length+' of '+section.items.length+' '+section.label+' results shown'}</VisuallyHidden>{page.hasMore&&<AutoMoreResults enabled={!loading} batch={section.label+':'+page.items.length+':'+section.items.length} onMore={()=>onMore?.(section.label)}/>}</Stack>;
   })}</Stack>:cards(items);
 }
 
@@ -139,7 +145,7 @@ export default function ViewMedia({csrf,initial,initialSource='discover',initial
         const next=source==='all'?refreshedPage(old,result):{...result,items:mergeCards([...(old?.items||[]),...result.items])};
         pageCache.current.set(scopeKey,next);return next;
       });
-    }catch(e){if(version===generation.current&&!controller.current?.signal.aborted)setError(e instanceof Error?e.message:'Could not load more.');}
+    }catch(e){if(e instanceof Error&&e.name==='AbortError')return;if(version===generation.current&&!controller.current?.signal.aborted)setError(e instanceof Error?e.message:'Could not load more.');}
     finally{if(version===generation.current){paging.current=false;setBusy(false);}}
   }
   // Warm one ordinary browse batch while the current cards are being read.
@@ -240,7 +246,7 @@ export default function ViewMedia({csrf,initial,initialSource='discover',initial
     {error&&<NotificationMessage kind="error" message={error} actions={<> <Button variant="secondary" onClick={()=>setRevision(i=>i+1)}>Try again</Button> </>}/>}
     <MediaWarnings key={scopeKey+':'+revision} messages={page?.warnings}/>
     {page?.scanning&&<Text size="sm" role="status">Reading your local media folders…</Text>}
-    <MediaResults items={cards} layout={layout} searched={globalSearch} source={source} today={today} onOpen={openItem} limits={page?.completeSet?undefined:searchLimits} loading={busy||page?.loading||page?.refreshing} onMore={globalSearch&&!page?.completeSet?group=>setSearchLimits(old=>({...old,[group]:(old[group]||searchPageSize)+searchPageSize})):undefined}/>
+    <MediaResults items={cards} layout={layout} searched={globalSearch} source={source} today={today} onOpen={openItem} limits={searchLimits} loading={busy||page?.loading||page?.refreshing||!!selected||!!childSelected} onMore={globalSearch?group=>setSearchLimits(old=>({...old,[group]:(old[group]||searchPageSize)+searchPageSize})):undefined}/>
     {globalSearch&&!busy&&!!page?.items.length&&!cards.length&&<Text c="dimmed" my="xl">No matches in these filters. Choose All sources or All media to see the other results.</Text>}
     {(busy||page?.loading)&&<Text size="sm" role="status">{globalSearch?'Searching sources…':'Loading media…'}</Text>}{page?.error&&<NotificationMessage kind="error" message={page.error} actions={<> <Button variant="secondary" onClick={()=>setRevision(n=>n+1)}>Try again</Button> </>}/>}{!busy&&!error&&!page?.scanning&&!page?.loading&&!page?.incomplete&&page&&!page.items.length&&<Paper withBorder p="xl" radius="md"><Stack align="center" ta="center"><Film size={32}/><Title order={3}>{query?'No matching media':source==='all'&&page.observationState==='unindexed'?'No observed titles yet':'No media to show yet'}</Title><Text c="dimmed">{query?(page?.completeSet?'No saved matches were found. Try a shorter title or check any source alerts.':'Try another title or search term.'):source==='all'?'Choose a source to browse its catalogue, or search all sources. Already saved results appear here automatically; background catalogue saving is optional.':source==='vod'?'Choose a synced M3U or Xtream playlist.':source==='subscriptions'?'Add YouTube channels and sync their uploads in ReelDock Settings.':'Media from the selected source will appear here.'}</Text></Stack></Paper>}
     <Box ref={sentinel} h={1} aria-hidden="true"/>

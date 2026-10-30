@@ -23,7 +23,7 @@ from .storage import Store
 from . import system_stats
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = 'v1.3.9'
+VERSION = 'v1.3.10'
 HOME_NETWORKS = tuple(ipaddress.ip_network(network) for network in
                       ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', 'fc00::/7', 'fe80::/10', '::1/128'))
 # Sign-in limits: failures per client before a five-minute lock, failures
@@ -905,7 +905,7 @@ def create_app(config=None):
         if not store.get('setup_complete') and not saved_guide_available():
             return jsonify(state='setup', continue_url='/setup')
         from .system_stats import snapshot
-        overview = snapshot(store, app.config['MEDIA_DIR'], VERSION, started)
+        overview = snapshot(store, app.config['MEDIA_DIR'], VERSION, started, app=app)
         with store.connect() as db:
             sources = db.execute('SELECT count(*) FROM m3u_sources').fetchone()[0]
         from .sync_all import status as sync_all_status
@@ -1232,7 +1232,7 @@ def create_app(config=None):
         denied=guide_access(local_action=True)
         if denied:return denied
         from .system_stats import snapshot
-        return jsonify(snapshot(store,app.config['MEDIA_DIR'],VERSION,started))
+        return jsonify(snapshot(store,app.config['MEDIA_DIR'],VERSION,started,app=app))
 
     @app.post('/api/channel-favourite/<channel>')
     def favourite_channel(channel):

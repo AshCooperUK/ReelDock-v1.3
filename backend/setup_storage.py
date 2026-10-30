@@ -1,9 +1,9 @@
 """First-run base media location, independent of application data."""
-import json
 import secrets
 import shutil
 from pathlib import Path
 from . import storage_layout
+from .storage_locations import roots as configured_roots
 
 def probe(path):
     folder=Path(path)
@@ -25,7 +25,7 @@ def state(app,store):
                     folders=folders, names=storage_layout.names(store), roots=[store.media_root],
                     auto_download_folder=folders['auto'], auto_download_host=folders['auto'],
                     can_choose_auto_folder=False, **{k:v for k,v in probe(store.media_root).items() if k!='path'})
-    roots=json.loads(app.config.get('REELDOCK_STORAGE_ROOTS','[]'))
+    roots=configured_roots(app)
     base=store.get('storage_base') or storage_layout.download_base(store) or (app.config.get('MEDIA_DIR', '') if store.get('setup_complete') else (roots[0] if roots else ''))
     from .storage_locations import host_path, locations
     folder=store.get('auto_download_folder') or ''
@@ -43,7 +43,7 @@ def save(app,store,body):
         if inferred:
             # The Compose-managed wizard sends {} even on old separate mounts.
             # Reuse a saved choice first; never try another mount if it is unsafe.
-            roots=json.loads(app.config.get('REELDOCK_STORAGE_ROOTS') or '[]')
+            roots=configured_roots(app)
             base=storage_layout.download_base(store) or (roots[0] if roots else '')
         storage_layout.select(app,store,base)
     except (ValueError,OSError) as exc:

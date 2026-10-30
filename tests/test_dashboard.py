@@ -72,4 +72,34 @@ class DashboardTests(unittest.TestCase):
         self.assertIsNone(self.get().json['overview']['m3u']['shows'])
         self.assertEqual(self.app.test_client().get('/api/overview',base_url=LOCAL).status_code,401)
 
+    def test_both_authenticated_overviews_include_configured_storage_and_legacy_fields(self):
+        self.admin();self.store.set('setup_complete','true')
+        extra = Path(self.tmp.name) / 'additional-media'
+        extra.mkdir()
+        self.app.config['REELDOCK_STORAGE_ROOTS'] = json.dumps([str(extra)])
+        for endpoint in ('/api/dashboard', '/api/overview'):
+            response = self.client.get(endpoint, base_url=LOCAL)
+            self.assertEqual(response.status_code, 200)
+            overview = response.json['overview'] if endpoint == '/api/dashboard' else response.json
+            self.assertIn('media_disk', overview)
+            self.assertIn('data_disk', overview)
+            self.assertTrue(any(str(extra) in row['paths'] for row in overview['storage_disks']))
+            anonymous = self.app.test_client().get(endpoint, base_url=LOCAL)
+            self.assertNotIn('storage_disks', anonymous.json)
+
+    def test_storage_configuration_warning_is_sanitized_private_and_clears_when_corrected(self):
+        self.admin();self.store.set('setup_complete','true')
+        self.app.config['REELDOCK_STORAGE_ROOTS'] = '[/private-invalid-imported-value]'
+        for endpoint in ('/api/dashboard', '/api/overview'):
+            response = self.client.get(endpoint, base_url=LOCAL)
+            self.assertEqual(response.status_code, 200)
+            overview = response.json['overview'] if endpoint == '/api/dashboard' else response.json
+            self.assertTrue(overview['storage_disks_incomplete'])
+            self.assertEqual(len(overview['storage_configuration_warnings']), 1)
+            self.assertIn('REELDOCK_STORAGE_ROOTS must be a JSON array', overview['storage_configuration_warnings'][0])
+            self.assertNotIn('private-invalid-imported-value', response.get_data(as_text=True))
+            self.assertNotIn('storage_configuration_warnings', self.app.test_client().get(endpoint, base_url=LOCAL).json)
+        self.app.config['REELDOCK_STORAGE_ROOTS'] = '[]'
+        self.assertEqual(self.get().json['overview']['storage_configuration_warnings'], [])
+
 if __name__ == '__main__': unittest.main()

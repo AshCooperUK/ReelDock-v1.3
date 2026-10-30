@@ -24,6 +24,17 @@ export type Overview = {
   favourites: number;
   downloads: Record<string, number>;
   media_disk: { total: number; used: number; free: number } | null;
+  data_disk?: { total: number; used: number; free: number } | null;
+  storage_disks?: {
+    id: string;
+    label: string;
+    paths: string[];
+    total: number | null;
+    used: number | null;
+    free: number | null;
+  }[];
+  storage_disks_incomplete?: boolean;
+  storage_configuration_warnings?: string[];
   downloads_paused: boolean;
 };
 

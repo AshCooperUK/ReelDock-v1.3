@@ -49,7 +49,8 @@ def targets(app, store):
     base = store.get('storage_base')
     if base:
         candidate = checked_directory(base)
-        roots = [checked_directory(p) for p in json.loads(app.config.get('REELDOCK_STORAGE_ROOTS') or '[]')]
+        from .storage_locations import roots as configured_roots
+        roots = [checked_directory(p) for p in configured_roots(app)]
         if not any(candidate.is_relative_to(root) for root in roots):
             raise ValueError('The saved ReelDock base is outside its configured storage mounts.')
         media.append(candidate)
@@ -88,7 +89,8 @@ def mount_inodes(app):
     for config in (app.config, app.extensions.get('storage_defaults', {})):
         paths.extend(config[key] for key in ('MEDIA_DIR', 'M3U_DIR') if config.get(key))
         paths.extend(json.loads(config.get('M3U_DOWNLOAD_ROOTS') or '[]'))
-    paths.extend(json.loads(app.config.get('REELDOCK_STORAGE_ROOTS') or '[]'))
+    from .storage_locations import roots as configured_roots
+    paths.extend(configured_roots(app))
     result = set()
     for value in paths:
         try:

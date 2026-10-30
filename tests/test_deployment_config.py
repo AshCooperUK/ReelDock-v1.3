@@ -26,7 +26,7 @@ PRIVADO_TEMPLATE = '${REELDOCK_PRIVADO_API_KEY:-}'
 LOCAL = Path('/DATA/AppData/reeldock-v13')
 CASAOS_MEDIA = Path('/DATA/Media/reeldock-v13/data')
 CASAOS_SETUP_URL = ''
-CASAOS_ICON = 'https://raw.githubusercontent.com/AshCooperUK/ReelDock-v1.3/v1.3.9/frontend/public/assets/reeldock-brand.svg'
+CASAOS_ICON = 'https://raw.githubusercontent.com/AshCooperUK/ReelDock-v1.3/v1.3.10/frontend/public/assets/reeldock-brand.svg'
 LOCAL_IMAGE = 'reeldock:1.3-development'
 RELEASE_IMAGE = 'ghcr.io/ashcooperuk/reeldock-v1.3:' + VERSION.removeprefix('v')
 # Paths and names used by the other ReelDock installation on the same NAS.
@@ -107,7 +107,9 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertEqual(env['REELDOCK_AUTO_LAN_SETUP'], '1')
         self.assertEqual(config['x-casaos']['hostname'], '')
         self.assertEqual(env['REELDOCK_MEDIA_ROOT'], '/reeldock')
-        self.assertEqual(json.loads(env['REELDOCK_STORAGE_ROOTS']), ['/reeldock'])
+        self.assertNotIn('REELDOCK_STORAGE_ROOTS', env, 'The exact fixed media mount needs no JSON environment value that CasaOS can rewrite')
+        from backend.storage_locations import roots
+        self.assertEqual(roots(SimpleNamespace(config=env, extensions={})), ['/reeldock'])
         self.assertEqual(env['REELDOCK_HOST_ROOT'], str(CASAOS_MEDIA))
         for legacy in ('MEDIA_DIR', 'M3U_DIR', 'M3U_DOWNLOAD_ROOTS', 'MEDIA_HOST_DIR',
                        'REELDOCK_DOWNLOAD_BASE', 'REELDOCK_STORAGE_LOCATIONS'):
