@@ -23,7 +23,7 @@ from .storage import Store
 from . import system_stats
 
 ROOT = Path(__file__).resolve().parent.parent
-VERSION = 'v1.3.8'
+VERSION = 'v1.3.9'
 HOME_NETWORKS = tuple(ipaddress.ip_network(network) for network in
                       ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', '127.0.0.0/8', 'fc00::/7', 'fe80::/10', '::1/128'))
 # Sign-in limits: failures per client before a five-minute lock, failures
@@ -123,6 +123,7 @@ def create_app(config=None):
         GOOGLE_CLIENT_ID=os.environ.get('GOOGLE_CLIENT_ID', ''),
         GOOGLE_CLIENT_SECRET=os.environ.get('GOOGLE_CLIENT_SECRET', ''),
         LOCAL_SETUP_URL=os.environ.get('LOCAL_SETUP_URL', 'http://127.0.0.1:8790'),
+        AUTO_LAN_SETUP=os.environ.get('REELDOCK_AUTO_LAN_SETUP') == '1',
         # Host-side port the browser uses for local setup. The container still listens
         # on 8790; a side-by-side install maps another host port (e.g. 8791) to it.
         APP_PORT=os.environ.get('APP_PORT', '8790'),
@@ -188,23 +189,36 @@ def create_app(config=None):
     if not port.isdigit() or not 1 <= int(port) <= 65535:
         raise ValueError('APP_PORT must be a port number between 1 and 65535.')
     port = int(port)
-    local = urlsplit(app.config['LOCAL_SETUP_URL'].rstrip('/'))
-    try:
-        local_port = local.port
-    except ValueError:
-        local_port = None
-    # The exact host:port is the only Host accepted for local setup, so both
-    # settings must agree; the check is as strict as the old fixed 8790 rule.
-    if (local.scheme != 'http' or not local.hostname or local.username or local.password
-            or local.path or local.query or local.fragment or local_port != port):
-        raise ValueError(f'LOCAL_SETUP_URL must be an HTTP NAS address on port {port} (APP_PORT), without a path.')
+    configured_local = app.config['LOCAL_SETUP_URL'].strip()
+    trusted_hosts = None
+    if not configured_local and app.config['AUTO_LAN_SETUP']:
+        from . import lan_setup
+        trusted_hosts, default_host = lan_setup.read_hosts()
+        fallback_local_origin = lan_setup.default_origin(default_host, port)
+    else:
+        local = urlsplit(configured_local.rstrip('/'))
+        try:
+            local_port = local.port
+        except ValueError:
+            local_port = None
+        # An explicit URL retains its exact Host and port contract, including
+        # when automatic LAN setup is enabled in the installation template.
+        if (local.scheme != 'http' or not local.hostname or local.username or local.password
+                or local.path or local.query or local.fragment or local_port != port):
+            raise ValueError(f'LOCAL_SETUP_URL must be an HTTP NAS address on port {port} (APP_PORT), without a path.')
+        fallback_local_origin = 'http://' + local.netloc.lower()
     # Browsers share cookies across ports on one host name, so a second
     # installation on another port gets its own local-setup cookie.
     local_cookie = 'reeldock_dev_local' if port == 8790 else f'reeldock_dev_local_{port}'
-    local_origin = 'http://' + local.netloc.lower()
-
     def local_host():
+        if trusted_hosts is not None:
+            return lan_setup.origin_for(request.host, request.scheme, port, trusted_hosts) is not None
         return request.host.lower() == local.netloc.lower()
+
+    def local_origin():
+        if trusted_hosts is not None:
+            return lan_setup.origin_for(request.host, request.scheme, port, trusted_hosts) or fallback_local_origin
+        return fallback_local_origin
 
     def home_network(value):
         try:
@@ -317,9 +331,10 @@ def create_app(config=None):
         origin = store.get('public_origin')
         exempt = request.path == '/health' or request.path.startswith('/setup/probe/')
         if not origin and not exempt and not direct_local():
-            message = 'Open ' + local_origin + '/setup on your home network to complete first installation.'
+            message = 'Open ' + local_origin() + '/setup on your home network to complete first installation.'
             if request.method == 'GET' and not request.path.startswith('/api/'):
-                return render_template('message.html', title='Continue setup on your NAS', message=message), 403
+                help_link = {'continue_url': local_origin() + '/setup'} if trusted_hosts is not None else {}
+                return render_template('message.html', title='Continue setup on your NAS', message=message, **help_link), 403
             return error(message, 403)
         if origin and not exempt and request.host.lower() != urlsplit(origin).netloc:
             if request.method in ('GET', 'HEAD'):
@@ -347,7 +362,7 @@ def create_app(config=None):
         # Signed WebSub callbacks alone accept server POSTs without a browser Origin.
         if request.endpoint == 'youtube_notification':
             return None
-        if request.method == 'POST' and request.headers.get('Origin') != (origin or local_origin):
+        if request.method == 'POST' and request.headers.get('Origin') != (origin or local_origin()):
             if request.path == '/login':
                 return render_template('message.html', title='Please reopen the sign-in page',
                                        message='The browser could not confirm this sign-in came from this app. Reopen sign-in and try again.',
@@ -490,7 +505,7 @@ def create_app(config=None):
                        source_ready=store.get('youtube_setup_source_ready')=='1' or (not store.get('youtube_setup_method') and not enabled(store)),
                        cookies_saved=(store.directory/'youtube-cookies.txt').is_file(),
                        cookie_import_status=store.get('youtube_cookie_subscriptions_status'),
-                       use_google_api=enabled(store),origin=store.get('public_origin') or (local_origin if store.get('local_only') == '1' else ''),
+                       use_google_api=enabled(store),origin=store.get('public_origin') or (local_origin() if store.get('local_only') == '1' else ''),
                        local_only=store.get('local_only') == '1', admin=bool(store.user()),
                        client_id_present=bool(client_id), client_secret_present=bool(secret),
                        id_from_yaml=bool(app.config['GOOGLE_CLIENT_ID']), secret_from_yaml=bool(app.config['GOOGLE_CLIENT_SECRET']),
@@ -534,7 +549,9 @@ def create_app(config=None):
         payload = request.get_json(silent=True) or {}
         try:
             origin = public_origin(str(payload.get('url', '')))
-            if urlsplit(origin).hostname == local.hostname:
+            public_host = urlsplit(origin).hostname
+            if (public_host == urlsplit(local_origin()).hostname
+                    or (trusted_hosts is not None and public_host in trusted_hosts)):
                 raise ValueError('Use a separate public hostname from your local setup address.')
             nonce = secrets.token_urlsafe(32)
             store.set('route_nonce', nonce)
@@ -860,7 +877,7 @@ def create_app(config=None):
         except ResetBusy:
             return jsonify(state='stopping', message='Stopping active work…'), 202
         except ValueError as exc:return error(str(exc), 400)
-        return jsonify(url=local_origin + '/setup')
+        return jsonify(url=local_origin() + '/setup')
 
     @app.post('/logout')
     def logout():

@@ -17,7 +17,7 @@ FROM python:3.13-slim
 # overrides it with the repository that actually builds the image.
 LABEL org.opencontainers.image.source="https://github.com/AshCooperUK/ReelDock-v1.3" \
       org.opencontainers.image.title="ReelDock" \
-      org.opencontainers.image.version="1.3.8"
+      org.opencontainers.image.version="1.3.9"
 COPY --from=frontend /usr/local/bin/node /usr/local/bin/node
 COPY --from=frontend /usr/local/share/licenses/node /usr/local/share/licenses/node
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/data MEDIA_DIR=/media M3U_DIR=/m3u TZ=Europe/London

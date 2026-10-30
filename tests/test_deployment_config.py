@@ -8,7 +8,10 @@ import sys
 import tempfile
 import time
 import unittest
+from contextlib import contextmanager
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 from urllib.parse import urlsplit
 from backend.app import create_app, VERSION
 
@@ -22,6 +25,8 @@ INSTALL_TEMPLATE = '${REELDOCK_INSTALL_DIR:-/DATA/AppData/reeldock-v13}'
 PRIVADO_TEMPLATE = '${REELDOCK_PRIVADO_API_KEY:-}'
 LOCAL = Path('/DATA/AppData/reeldock-v13')
 CASAOS_MEDIA = Path('/DATA/Media/reeldock-v13/data')
+CASAOS_SETUP_URL = ''
+CASAOS_ICON = 'https://raw.githubusercontent.com/AshCooperUK/ReelDock-v1.3/v1.3.9/frontend/public/assets/reeldock-brand.svg'
 LOCAL_IMAGE = 'reeldock:1.3-development'
 RELEASE_IMAGE = 'ghcr.io/ashcooperuk/reeldock-v1.3:' + VERSION.removeprefix('v')
 # Paths and names used by the other ReelDock installation on the same NAS.
@@ -32,6 +37,26 @@ OTHER_NAMES = {'ytsd', 'ytsd-web', 'ytsd-worker'}
 
 @unittest.skipIf(yaml is None, 'PyYAML is not installed')
 class DeploymentConfigTests(unittest.TestCase):
+    @contextmanager
+    def trusted_lan(self, folder):
+        from backend import lan_setup
+        directory=Path(folder)/'vpn-run';directory.mkdir(mode=0o755)
+        snapshot=directory/'lan-hosts.json'
+        snapshot.write_text(json.dumps(dict(version=1,hosts=['10.20.30.40','127.0.0.1','localhost','synthetic-nas.local'],default_host='10.20.30.40')))
+        snapshot.chmod(0o644)
+        identities={(item.stat().st_dev,item.stat().st_ino) for item in (directory,snapshot)}
+        original=os.fstat
+        def root_owned(descriptor):
+            info=original(descriptor)
+            if (info.st_dev,info.st_ino) not in identities:return info
+            # CI cannot chown root; only these real fixture inodes model UID0.
+            # Real file/directory modes, type, nlink and stable-read checks run.
+            fields={name:getattr(info,name) for name in dir(info) if name.startswith('st_')}
+            fields['st_uid']=0
+            return SimpleNamespace(**fields)
+        with patch.object(lan_setup,'HOSTS_PATH',snapshot),patch.object(lan_setup.os,'fstat',side_effect=root_owned),patch.dict(os.environ,{'REELDOCK_AUTO_LAN_SETUP':'1'}):
+            yield 'http://10.20.30.40:8821'
+
     def load(self, name, install=LOCAL):
         # Resolve only the two public-template variables, without reading local
         # environment credentials or requiring Docker for pure YAML assertions.
@@ -58,13 +83,13 @@ class DeploymentConfigTests(unittest.TestCase):
             self.assertEqual(service['image'],image)
             for path in self.host_paths(service):
                 with self.subTest(service=name, path=path):
-                    self.assertIn(path,allowed)
+                    self.assertIn(path,allowed|({'/etc/hostname','/etc/hosts'} if image==RELEASE_IMAGE and name=='prepare-storage' else set()))
                     self.assertNotEqual(path, OTHER_DATA)
                     self.assertFalse(path.startswith(OTHER_MEDIA))
             self.assertNotIn('ashjohn', json.dumps(service))
         self.assertIn(config['x-casaos']['title']['en_US'], ('ReelDock V1.3',))
         self.assertEqual(config['x-casaos']['port_map'], '8821')
-        self.assertEqual(services['vpn']['ports'],['127.0.0.1:8821:8790'])
+        self.assertEqual(services['vpn']['ports'],[dict(target=8790,published='8821',protocol='tcp')] if image==RELEASE_IMAGE else ['127.0.0.1:8821:8790'])
         self.assertEqual(services['web']['environment']['REELDOCK_HOST_ROOT'],str(media))
         self.assertEqual(services['web']['environment'],services['worker']['environment'])
         return services
@@ -75,10 +100,12 @@ class DeploymentConfigTests(unittest.TestCase):
         services = self.check_isolated(config, RELEASE_IMAGE, CASAOS_MEDIA)
         env = services['web']['environment']
         self.assertEqual(services['worker']['environment'], env)
-        self.assertEqual(services['vpn']['ports'], ['127.0.0.1:8821:8790'])
+        self.assertEqual(services['vpn']['ports'], [dict(target=8790,published='8821',protocol='tcp')])
         self.assertEqual(env['APP_URL'], '')
         self.assertEqual(env['APP_PORT'], '8821')
-        self.assertEqual(env['LOCAL_SETUP_URL'], 'http://127.0.0.1:8821')
+        self.assertEqual(env['LOCAL_SETUP_URL'], CASAOS_SETUP_URL)
+        self.assertEqual(env['REELDOCK_AUTO_LAN_SETUP'], '1')
+        self.assertEqual(config['x-casaos']['hostname'], '')
         self.assertEqual(env['REELDOCK_MEDIA_ROOT'], '/reeldock')
         self.assertEqual(json.loads(env['REELDOCK_STORAGE_ROOTS']), ['/reeldock'])
         self.assertEqual(env['REELDOCK_HOST_ROOT'], str(CASAOS_MEDIA))
@@ -108,25 +135,31 @@ class DeploymentConfigTests(unittest.TestCase):
         self.assertEqual(self.load('compose.casaos.yaml', Path('/srv/reeldock-fixture')), config,
                          'The CasaOS template keeps explicit host paths independent of source-build overrides')
         prepare = services['prepare-storage']
-        self.assertEqual(prepare['command'], ["import os; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700)"])
+        self.assertEqual(prepare['command'], ["import os, subprocess, sys; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700); subprocess.run([sys.executable,'-m','backend.lan_setup'],check=True)"])
         self.assertEqual(prepare['volumes'], [dict(type='bind',source=str(LOCAL / 'vpn-run'),target='/vpn-run'),
                          dict(type='bind',source=str(LOCAL / 'vpn-state'),target='/vpn-state'),
                          dict(type='bind',source=str(CASAOS_MEDIA),target='/reeldock'),
-                         dict(type='bind',source=str(LOCAL / 'data'),target='/data')])
+                         dict(type='bind',source=str(LOCAL / 'data'),target='/data'),
+                         *[dict(type='bind',source='/etc/'+name,target='/host/etc/'+name,read_only=True)
+                           for name in ('hostname','hosts')]])
+        self.assertEqual(prepare['network_mode'], 'host')
+        self.assertNotIn('container_name',prepare)
+        self.assertNotIn('hostname',prepare)
+        self.assertNotIn('environment',prepare, 'The host collector must not inherit app preload/VPN broker settings')
+        for role in ('web','worker','vpn'):
+            self.assertFalse(any(mount['source'].startswith('/etc/') for mount in services[role]['volumes']))
         self.assertEqual(prepare['cap_add'], ['CHOWN', 'FOWNER'])
         self.assertEqual(prepare['user'], '0:0')
         self.assertEqual(prepare['restart'], 'on-failure:1', 'CasaOS rewrites no to unless-stopped; a bounded failure retry preserves successful one-off completion')
         self.assertTrue(prepare['healthcheck']['disable'])
         for role, memory in (('web', '1GB'), ('worker', '2GB')):
             self.assertEqual(services[role]['deploy']['resources']['limits'], {'memory': memory, 'cpus': '1.00'})
-        icon = urlsplit(config['x-casaos']['icon'])
-        self.assertEqual(icon.netloc, urlsplit(env['LOCAL_SETUP_URL']).netloc)
-        self.assertEqual(icon.path, '/preview/assets/reeldock-brand.svg')
+        self.assertEqual(config['x-casaos']['icon'], CASAOS_ICON)
         self.assertTrue((ROOT / 'frontend/public/assets/reeldock-brand.svg').is_file())
 
     def test_casaos_environment_is_accepted_by_the_app(self):
         env = self.load('compose.casaos.yaml')['services']['web']['environment']
-        with tempfile.TemporaryDirectory() as folder:
+        with tempfile.TemporaryDirectory() as folder,self.trusted_lan(folder) as origin:
             media = Path(folder) / 'media'
             media.mkdir()
             app = create_app({**env, 'TESTING': True, 'DATA_DIR': str(Path(folder) / 'data'),
@@ -134,10 +167,11 @@ class DeploymentConfigTests(unittest.TestCase):
                               'CANDIDATE_URL': env['APP_URL']})
             client = app.test_client()
             store = app.extensions['store']
-            self.assertEqual(client.get('/setup', base_url=env['LOCAL_SETUP_URL']).status_code, 200)
-            self.assertEqual(client.get('/setup', base_url='http://127.0.0.1:8822').status_code, 403)
-            self.assertEqual(client.get('/preview/assets/reeldock-brand.svg', base_url=env['LOCAL_SETUP_URL']).status_code, 200)
-            state = client.get('/api/setup/state', base_url=env['LOCAL_SETUP_URL']).json
+            self.assertTrue(app.config['AUTO_LAN_SETUP'])
+            self.assertEqual(client.get('/setup', base_url=origin).status_code, 200)
+            self.assertEqual(client.get('/setup', base_url=origin.replace(':8821',':8822')).status_code, 403)
+            self.assertEqual(client.get('/preview/assets/reeldock-brand.svg', base_url=origin).status_code, 200)
+            state = client.get('/api/setup/state', base_url=origin).json
             self.assertTrue(state['storage']['locked'])
             self.assertTrue(state['storage']['ready'])
             self.assertEqual(state['storage']['host_path'], str(CASAOS_MEDIA))
@@ -148,8 +182,8 @@ class DeploymentConfigTests(unittest.TestCase):
                              'VOD TV Shows', 'VOD Movies', 'YouTube Subscriptions', 'YouTube Downloads'})
 
             def post(action, body):
-                return client.post('/api/setup/' + action, json=body, base_url=env['LOCAL_SETUP_URL'],
-                                   headers={'Origin': env['LOCAL_SETUP_URL'], 'X-CSRF-Token': state['csrf']})
+                return client.post('/api/setup/' + action, json=body, base_url=origin,
+                                   headers={'Origin': origin, 'X-CSRF-Token': state['csrf']})
 
             response = post('admin', dict(username='owner', password='long-test-password', confirm='long-test-password'))
             self.assertEqual(response.status_code, 200, response.json)
@@ -158,7 +192,51 @@ class DeploymentConfigTests(unittest.TestCase):
                 response = post(action, {})
                 self.assertEqual(response.status_code, 200, (action, response.json))
             self.assertEqual(store.get('setup_complete'), '1')
-            self.assertEqual(client.get('/app/', base_url=env['LOCAL_SETUP_URL']).status_code, 200)
+            self.assertEqual(client.get('/app/', base_url=origin).status_code, 200)
+
+    def test_casaos_auto_hosts_follow_browser_address_and_keep_origin_exact(self):
+        env=self.load('compose.casaos.yaml')['services']['web']['environment']
+        with tempfile.TemporaryDirectory() as folder,self.trusted_lan(folder) as default:
+            media=Path(folder)/'media';media.mkdir()
+            app=create_app({**env,'TESTING':True,'DATA_DIR':str(Path(folder)/'data'),
+                            'REELDOCK_MEDIA_ROOT':str(media),'REELDOCK_STORAGE_ROOTS':json.dumps([str(media)]),'CANDIDATE_URL':''})
+            client=app.test_client();origin='http://synthetic-nas.local:8821';peer={'REMOTE_ADDR':'10.20.30.50'}
+            for accepted in (default,origin,'http://127.0.0.1:8821'):
+                self.assertEqual(client.get('/api/setup/state',base_url=accepted,environ_overrides=peer).status_code,200)
+            rejected=client.get('/setup',base_url='http://evil.example:8821',environ_overrides=peer)
+            self.assertEqual(rejected.status_code,403);self.assertIn(default+'/setup',rejected.text)
+            state=client.get('/api/setup/state',base_url=origin,environ_overrides=peer).json
+            payload=dict(username='fixture-user',password='fixture-password-long',confirm='fixture-password-long')
+            for wrong in (default,'http://evil.example:8821'):
+                response=client.post('/api/setup/admin',base_url=origin,environ_overrides=peer,
+                                     headers={'Origin':wrong,'X-CSRF-Token':state['csrf']},json=payload)
+                self.assertEqual(response.status_code,403)
+            self.assertEqual(client.post('/api/setup/admin',base_url=origin,environ_overrides=peer,
+                                        headers={'Origin':origin,'X-CSRF-Token':state['csrf']},json=payload).status_code,200)
+
+    def test_casaos_lan_setup_uses_exact_configured_host_without_trusting_proxies(self):
+        env = self.load('compose.casaos.yaml')['services']['web']['environment']
+        origin = 'http://10.20.30.40:8821'
+        with tempfile.TemporaryDirectory() as folder:
+            media = Path(folder) / 'media'; media.mkdir()
+            app = create_app({**env, 'TESTING': True, 'LOCAL_SETUP_URL': origin, 'AUTO_LAN_SETUP': True,
+                              'DATA_DIR': str(Path(folder) / 'data'), 'REELDOCK_MEDIA_ROOT': str(media),
+                              'REELDOCK_STORAGE_ROOTS': json.dumps([str(media)]), 'CANDIDATE_URL': ''})
+            client = app.test_client(); peer = {'REMOTE_ADDR': '10.20.30.50'}
+            response = client.get('/api/setup/state', base_url=origin, environ_overrides=peer)
+            self.assertEqual(response.status_code, 200)
+            for wrong in ('http://10.20.30.41:8821', 'http://10.20.30.40:8822', 'http://evil.example:8821'):
+                self.assertEqual(client.get('/setup', base_url=wrong, environ_overrides=peer).status_code, 403)
+            for headers in ({'Forwarded':'host=10.20.30.40:8821'}, {'X-Forwarded-Host':'10.20.30.40:8821'},
+                            {'X-Forwarded-For':'10.20.30.50'}):
+                self.assertEqual(client.get('/setup', base_url=origin, environ_overrides=peer, headers=headers).status_code, 403)
+            self.assertEqual(client.get('/setup', base_url=origin, environ_overrides={'REMOTE_ADDR':'8.8.8.8'}).status_code, 403)
+            rejected = client.post('/api/setup/admin', base_url=origin, environ_overrides=peer,
+                                   headers={'Origin':'http://evil.example:8821','X-CSRF-Token':response.json['csrf']},
+                                   json={'username':'fixture-user','password':'fixture-password-long','confirm':'fixture-password-long'})
+            self.assertEqual(rejected.status_code, 403)
+            with app.extensions['store'].connect() as db:
+                self.assertEqual(db.execute('SELECT COUNT(*) FROM users').fetchone()[0], 0)
 
     def test_release_image_and_workflows_remain_repository_scoped(self):
         services = self.load('compose.casaos.yaml')['services']
@@ -205,20 +283,20 @@ class DeploymentConfigTests(unittest.TestCase):
                 alternate=self.load(name,Path('/srv/reeldock-fixture'))['services']
                 alternate_root=str(LOCAL) if name=='compose.casaos.yaml' else '/srv/reeldock-fixture'
                 self.assertEqual(alternate['web']['environment']['REELDOCK_HOST_ROOT'],str(CASAOS_MEDIA) if name=='compose.casaos.yaml' else alternate_root+'/media')
-                self.assertTrue(all(not host.startswith('/') or host.startswith(alternate_root+'/') or (name=='compose.casaos.yaml' and host==str(CASAOS_MEDIA)) for service in alternate.values() for host in self.host_paths(service)))
+                self.assertTrue(all(not host.startswith('/') or host.startswith(alternate_root+'/') or (name=='compose.casaos.yaml' and host in {str(CASAOS_MEDIA),'/etc/hostname','/etc/hosts'}) for service in alternate.values() for host in self.host_paths(service)))
                 self.assertEqual(services['vpn']['environment'],{'REELDOCK_PRIVADO_API_KEY':''})
                 for role in ('web','worker','prepare-storage'):
                     self.assertNotIn('REELDOCK_PRIVADO_API_KEY',services[role].get('environment',{}),'The VPN provider key is not shared with application services')
                 self.assertEqual(meta['version'],VERSION);self.assertEqual(meta['main'],'web')
                 self.assertEqual(meta['architectures'],['amd64']);self.assertIsInstance(meta['port_map'],str)
-                self.assertTrue(meta['icon'].endswith('/preview/assets/reeldock-brand.svg'))
+                self.assertEqual(meta['icon'],CASAOS_ICON) if name=='compose.casaos.yaml' else self.assertTrue(meta['icon'].endswith('/preview/assets/reeldock-brand.svg'))
                 self.assertEqual(set(config.get('volumes',{})),set() if name=='compose.casaos.yaml' else {'vpn-run','vpn-state'})
                 self.assertEqual(services['vpn']['dns'],['127.0.0.1'])
                 self.assertIn('NET_ADMIN',services['vpn']['cap_add'])
                 for service in services.values():
                     self.assertEqual(service['cap_drop'],['ALL'])
                     self.assertIn('no-new-privileges:true',service['security_opt'])
-                    self.assertTrue(all(isinstance(port,str) for port in service.get('ports',[])))
+                    self.assertTrue(all(isinstance(port,dict if name=='compose.casaos.yaml' else str) for port in service.get('ports',[])))
                     self.assertTrue(all(isinstance(device,str) for device in service.get('devices',[])))
                 for role in ('web','worker'):
                     app=services[role]

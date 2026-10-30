@@ -1,4 +1,4 @@
-ReelDock 1.3.8
+ReelDock 1.3.9
 
 Source repository: https://github.com/AshCooperUK/ReelDock-v1.3
 
@@ -16,7 +16,7 @@ Requires Docker Engine and Docker Compose on a Linux host.
    docker compose -f compose.yaml up -d --no-build
 5. Open http://127.0.0.1:8821/setup on the Docker host to create your account.
 
-The service binds to loopback by default. Configure a verified public address
+The source-build service binds to loopback by default. Configure a verified public address
 through setup when using a reverse proxy. Never expose the setup port directly
 without reviewing the application's host and origin requirements.
 
@@ -29,7 +29,7 @@ Integrated Privado sign-in additionally requires an API key supplied to the VPN
 container through REELDOCK_PRIVADO_API_KEY. This repository contains no provider
 API key. WireGuard configuration uploads remain available.
 
-The CasaOS template uses ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8. Import
+The CasaOS template uses ghcr.io/ashcooperuk/reeldock-v1.3:1.3.9. Import
 compose.casaos.yaml from the matching published release. Its host directories
 are explicit paths for compatibility with the CasaOS importer:
    Media and downloads (/reeldock): /DATA/Media/reeldock-v13/data
@@ -48,11 +48,33 @@ Source builds use compose.yaml and its REELDOCK_INSTALL_DIR setting instead.
 The tag-triggered release workflow derives its package name from this repository.
 No container is published simply by pushing the main branch.
 
-For first setup on another server, keep the loopback binding and use an SSH
-tunnel from your computer, then open http://127.0.0.1:8821/setup locally:
+CasaOS LAN setup
+----------------
+Leave the Web UI hostname and LOCAL_SETUP_URL blank. CasaOS opens its server
+address on port 8821; the container listens on 8790. Automatic LAN setup is
+enabled by REELDOCK_AUTO_LAN_SETUP=1 in the template. No HOST_IP substitution
+or fixed server address is required.
+
+Storage preparation briefly uses host networking to read the server's local
+interface addresses and read-only /etc/hostname and /etc/hosts identity files.
+It writes a protected, root-owned address snapshot in vpn-run, then exits.
+ReelDock accepts direct home-network setup only on those trusted addresses,
+with its existing Origin, CSRF and account checks. Unknown DNS-only aliases
+show a link to the detected LAN IP. No caller-supplied hostname is saved or
+automatically trusted. An explicit LOCAL_SETUP_URL remains an optional override.
+
+Keep web and worker on their supplied service:vpn network setting; selecting
+Bridge for those services replaces their shared VPN network. The preparation
+service's host network is intentional and does not carry downloads.
+
+Open ReelDock from CasaOS and choose "Skip — use locally" for LAN-only access.
+Configure a separately verified HTTPS address in setup for public access.
+After a server address change, rerun preparation and recreate web/worker so
+they load the refreshed snapshot. Existing data and media directories stay put.
+
+For a remote source-build installation that retains loopback binding, use an
+SSH tunnel, then open http://127.0.0.1:8821/setup locally:
    ssh -L 8821:127.0.0.1:8821 your-user@your-server
-After creating the account, configure the verified address and reverse proxy
-for normal remote access.
 
 Development
 -----------

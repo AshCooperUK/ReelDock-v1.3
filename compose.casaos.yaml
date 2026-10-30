@@ -8,7 +8,9 @@ x-app-environment: &app-environment
   APP_URL: ""
   # Host-side port; the container itself always listens on 8790.
   APP_PORT: "8821"
-  LOCAL_SETUP_URL: http://127.0.0.1:8821
+  # Trust only the exact LAN addresses collected by prepare-storage on this server.
+  LOCAL_SETUP_URL: ""
+  REELDOCK_AUTO_LAN_SETUP: "1"
   REELDOCK_HOST_ROOT: /DATA/Media/reeldock-v13/data
   REELDOCK_MEDIA_ROOT: /reeldock
   REELDOCK_STORAGE_ROOTS: '["/reeldock"]'
@@ -33,12 +35,15 @@ x-app-volumes: &app-volumes
 
 services:
   vpn:
-    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
+    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.9
     container_name: reeldock-v13-vpn
     user: "0:0"
     restart: unless-stopped
     command: ["python", "-m", "runtime.vpn.gateway"]
-    ports: ["127.0.0.1:8821:8790"]
+    ports:
+      - target: 8790
+        published: "8821"
+        protocol: tcp
     dns: ["127.0.0.1"]
     environment:
       REELDOCK_PRIVADO_API_KEY: "${REELDOCK_PRIVADO_API_KEY:-}"
@@ -62,7 +67,7 @@ services:
       retries: 3
       start_period: 10s
   web:
-    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
+    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.9
     restart: unless-stopped
     network_mode: "service:vpn"
     environment: *app-environment
@@ -81,7 +86,7 @@ services:
           cpus: "1.00"
 
   worker:
-    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
+    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.9
     restart: unless-stopped
     command: ["python", "-m", "backend.worker"]
     network_mode: "service:vpn"
@@ -120,12 +125,13 @@ services:
           cpus: "1.00"
 
   prepare-storage:
-    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.8
+    image: ghcr.io/ashcooperuk/reeldock-v1.3:1.3.9
     user: "0:0"
+    network_mode: host
     restart: on-failure:1
     entrypoint: ["python", "-c"]
     command:
-      - "import os; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700)"
+      - "import os, subprocess, sys; [os.chown(p,10001,10001) for p in ('/data','/reeldock')]; os.chmod('/data',0o700); [os.chown(p,0,0) for p in ('/vpn-run','/vpn-state')]; os.chmod('/vpn-run',0o755); os.chmod('/vpn-state',0o700); subprocess.run([sys.executable,'-m','backend.lan_setup'],check=True)"
     volumes:
       - type: bind
         source: /DATA/AppData/reeldock-v13/vpn-run
@@ -139,6 +145,14 @@ services:
       - type: bind
         source: /DATA/AppData/reeldock-v13/data
         target: /data
+      - type: bind
+        source: /etc/hostname
+        target: /host/etc/hostname
+        read_only: true
+      - type: bind
+        source: /etc/hosts
+        target: /host/etc/hosts
+        read_only: true
     healthcheck:
       disable: true
     security_opt: ["no-new-privileges:true"]
@@ -147,17 +161,17 @@ services:
 
 x-casaos:
   architectures: [amd64]
-  # Bundled icon served by this installation (public asset, no account needed).
-  icon: http://127.0.0.1:8821/preview/assets/reeldock-brand.svg
+  # Public versioned artwork works from the browser before setup is complete.
+  icon: https://raw.githubusercontent.com/AshCooperUK/ReelDock-v1.3/v1.3.9/frontend/public/assets/reeldock-brand.svg
   main: web
   port_map: "8821"
   scheme: http
-  hostname: 127.0.0.1
+  hostname: ""
   index: /setup
   title:
     en_US: ReelDock V1.3
   category: Media
-  version: v1.3.8
+  version: v1.3.9
   tagline:
     en_US: Your media. In one place.
   description:
