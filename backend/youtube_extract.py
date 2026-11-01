@@ -6,11 +6,15 @@ from yt_dlp import YoutubeDL
 class Quiet:
     def debug(self,*args):pass
     def warning(self,*args):pass
-    def error(self,*args):pass
+    def error(self,message,*args):
+        # Captured privately by the parent, which publishes fixed categories.
+        sys.stderr.write('ERROR: '+str(message)[-16384:]+'\n')
 
 def main():
     from .vpn.transport import install
     install()
+    from .youtube_download import install_retry_after
+    install_retry_after()
     request=json.load(sys.stdin)
     opts=dict(quiet=True,no_warnings=True,logger=Quiet(),skip_download=True,
               socket_timeout=15,retries=1,extractor_retries=1,noplaylist=request['mode']=='video',
@@ -28,4 +32,6 @@ def main():
 
 if __name__=='__main__':
     try:main()
-    except Exception:sys.exit(1)
+    except Exception as exc:
+        sys.stderr.write('ERROR: '+str(exc)[-16384:]+'\n')
+        sys.exit(1)

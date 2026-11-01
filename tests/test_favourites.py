@@ -217,9 +217,12 @@ class FavouritesTests(unittest.TestCase):
         other=self.vod(provider='tvdb',identity='88',key='other',source='other')
         self.assertEqual(self.post('/api/favourites/vod-title',other).json['item']['id'],'show:88')
 
-    def test_disabled_missing_and_sample_vod_entries_are_rejected(self):
+    def test_paused_refresh_keeps_title_but_removed_missing_and_sample_entries_are_rejected(self):
         entry=self.vod()
         with self.store.connect() as db:db.execute("UPDATE m3u_sources SET options='{\"enabled\":false}'")
+        self.assertEqual(self.post('/api/favourites/vod-title',entry).status_code,200)
+        from backend import m3u_removal
+        with self.store.connect() as db:m3u_removal.queue(db,entry['source'])
         self.assertEqual(self.post('/api/favourites/vod-title',entry).status_code,400)
         sample=self.vod(source='sample',key='sample',path='sample.strm')
         self.assertEqual(self.post('/api/favourites/vod-title',sample).status_code,400)

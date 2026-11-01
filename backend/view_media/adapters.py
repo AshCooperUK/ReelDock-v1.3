@@ -79,14 +79,19 @@ def discover(app, store, args):
             from .show_sections import remember_available
             remember_available(store,indexers,result['items'])
             if args.get('_partial'):args['_partial'](page(result))
-            # Optional dates/artwork must not hold up the release-page cursor.
-            # Keep the legacy warning while exposing separate acquisition and
-            # metadata status for the saved-catalogue worker.
+            # Optional TV dates/artwork have a separate scope from releases.
             result.update(sourceWarnings=list(result.get('warnings',[])),sourceIncomplete=bool(result.get('incomplete')),
                 sourceRetryAt=getattr(result.get('warnings',[]),'retry_at',0),metadataPending=[])
-            failures=enrich(store,result['items'],lambda:args['_partial'](page(result)) if args.get('_partial') else None,
-                on_failure=lambda item:result['metadataPending'].append(str(item.get('externalId') or '')))
-            if failures:result.update(incomplete=True,retryAt=time.time()+60,warnings=[*result.get('warnings',[]),'Some TV metadata could not be checked. Known dates are shown; unknown dates sort last.'])
+            failed_titles=[]
+            def unavailable(item):
+                result['metadataPending'].append(str(item.get('externalId') or ''))
+                failed_titles.append(str(item.get('title') or 'Untitled series')[:100])
+            failures=enrich(store,result['items'],lambda:args['_partial'](page(result)) if args.get('_partial') else None,on_failure=unavailable)
+            if failures:
+                titles=', '.join(sorted(set(failed_titles))[:3])
+                scope=str(failures)+' series'+(' ('+titles+')' if titles else '')
+                result.update(incomplete=True,retryAt=time.time()+60,warnings=[*result.get('warnings',[]),
+                    'NZB TV metadata: extra dates or artwork could not be checked for '+scope+'. Known dates are kept; unknown dates sort last. Retrying automatically.'])
         if media=='movies' and not result.get('metadataComplete'):
             if args.get('_partial'):args['_partial'](page(result))
             movies(store,result['items'])
@@ -126,28 +131,15 @@ def subscriptions(app, store, args):
 
 
 def vod(app, store, args):
-    limit=args.get('_limit',PAGE)
-    from .. import m3u_catalogue
+    from ..m3u_availability import AVAILABLE_SQL
+    from .vod_groups import browse,cards
     with store.connect() as db:
-        sources=[dict(r) for r in db.execute('SELECT id,name FROM m3u_sources ORDER BY name COLLATE NOCASE')]
-        source=args['collection'] or (sources[0]['id'] if sources else '')
-        if source and source not in {s['id'] for s in sources}: raise ValueError('Choose an available VOD source.')
-        kinds=('movies','series','tv') if args['q'] else ('movies',) if args['media']=='movies' else ('series','tv')
-        query='%'+args['q'].replace('!','!!').replace('%','!%').replace('_','!_')+'%'
-        field,direction={'new':('c.added','DESC'),'oldest':('c.added','ASC'),'title':('f.title COLLATE NOCASE','ASC'),'title_desc':('f.title COLLATE NOCASE','DESC'),'year':('NULLIF(t.year,0)','DESC'),'year_asc':('NULLIF(t.year,0)','ASC'),'rating':("CAST(NULLIF(json_extract(t.data,'$.rating'),'') AS REAL)",'DESC'),'release':("NULLIF(COALESCE(NULLIF(c.release_date,''),json_extract(t.data,'$.release_date')),'')",'DESC'),'release_asc':("NULLIF(COALESCE(NULLIF(c.release_date,''),json_extract(t.data,'$.release_date')),'')",'ASC'),'episode_added':('c.added','DESC'),'episode_added_asc':('c.added','ASC'),'rating_asc':("CAST(NULLIF(json_extract(t.data,'$.rating'),'') AS REAL)",'ASC')}[args['sort']]
-        order=f'({field}) IS NULL,{field} {direction},f.path'
-        sql="""SELECT f.source,f.path,f.title,f.kind,f.group_name,t.data AS metadata,c.key AS catalog_key
-            FROM m3u_files f LEFT JOIN m3u_catalog_entries c ON c.source=f.source AND c.path=f.path
-            LEFT JOIN m3u_catalog_titles t ON t.key=c.key WHERE f.source=? AND f.kind IN ("""+','.join('?' for _ in kinds)+") AND f.title LIKE ? ESCAPE '!' ORDER BY "+order
-        params=(source,*kinds,query)
-        if limit is not None:sql+=' LIMIT ? OFFSET ?';params+= (limit+1,args['offset'])
-        rows=db.execute(sql,params).fetchall()
-        entries=m3u_catalogue.decorate(db,rows if limit is None else rows[:limit])
-    items=[]
-    for entry in entries:
-        item=dict(id=entry['source']+':'+entry['path'],title=entry['title'],kind='movie' if entry['kind']=='movies' else 'show',image=entry.get('artwork'),description=entry.get('description'),rating=entry.get('rating'),**duration_fields(seconds=entry.get('durationSeconds'),minutes=entry.get('runtimeMinutes')))
-        items.append(card(item,dict(type='vod',source=source,item=entry)))
-    return dict(items=items,nextOffset=args['offset']+limit if limit is not None and len(rows)>limit else None,label='Your VOD catalogue',collections=sources,collection=source)
+        sources=[dict(r) for r in db.execute("SELECT s.id,s.name FROM m3u_sources s WHERE "+AVAILABLE_SQL+" ORDER BY s.name COLLATE NOCASE")]
+    source=args['collection'] or (sources[0]['id'] if sources else '')
+    if source and source not in {s['id'] for s in sources}:raise ValueError('Choose an available VOD source.')
+    if not source:return dict(items=[],nextOffset=None,label='Your VOD catalogue',collections=sources,collection='')
+    page=browse(store,args['media'],args['q'],args['offset'],args.get('_limit',PAGE),source,args['sort'])
+    return dict(page,items=cards(page),label='Your VOD catalogue',collections=sources,collection=source)
 
 
 def library(app, store, args):

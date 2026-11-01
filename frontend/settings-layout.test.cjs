@@ -19,7 +19,7 @@ for(width of [320,768,1440]) {
  for(const label of ['Current password','New password','Confirm new password'])assert.ok(html.includes(label));
  assert.ok(html.includes('Change password')&&html.includes('Sign out')&&html.includes('Reset ReelDock'));
  assert.doesNotMatch(html,/class="[^"]*(settings-dialog|setting-row|value-badge|media-dialog)/);
- if(width<992)assert.match(html,/aria-label="Settings category"/);else for(const label of ['General','YouTube','VOD connections','Usenet &amp; NZB','Torrents','Watched folders','Metadata','VPN','Media servers','Appearance','Account &amp; security'])assert.ok(html.includes(label),label);
+ if(width<992)assert.match(html,/aria-label="Settings category"/);else for(const label of ['General','YouTube','VOD connections','Usenet &amp; NZB','Torrents','Watched folders','Library optimisation','Metadata','VPN','Media servers','Appearance','Account &amp; security'])assert.ok(html.includes(label),label);
  const fieldOrder=html.indexOf('Use at least 12 characters.');const password=html.indexOf('autoComplete="new-password"');assert.ok(fieldOrder>password,'settings descriptions follow their inputs');
  const importHtml=render(React.createElement(ChannelImport.default,{csrf:'fixture'}));
  assert.match(importHtml,/mantine-Accordion-root/,'channel import stays in the shared inline disclosure');
@@ -31,7 +31,7 @@ for(width of [320,768,1440]) {
 }
 width=320;let selected;
 const choice=page.SettingsCategories({section:'General',onSelect:value=>selected=value});
-assert.deepEqual(Array.from(choice.props.data,item=>item.value),['General','YouTube','VOD Settings','NZB Settings','Torrent Settings','Auto-Download','Metadata','VPN','Media Players','Appearance','Account & security']);
+assert.deepEqual(Array.from(choice.props.data,item=>item.value),['General','YouTube','VOD Settings','NZB Settings','Torrent Settings','Auto-Download','Library optimisation','Metadata','VPN','Media Players','Appearance','Account & security']);
 choice.props.onChange({currentTarget:{value:'NZB Settings'}});assert.equal(selected,'NZB Settings','display names preserve canonical route values');
 // Keep one mounted Settings page in sync with deep links/notification routes
 // without resetting manual category choices on unrelated parent renders.
@@ -46,7 +46,7 @@ navigation.props.onSelect('VPN');navigation=rerender('General');assert.equal(nav
 navigation=rerender('YouTube');assert.equal(navigation.props.section,'YouTube','Update cookies changes an already-mounted page to YouTube');
 navigation=rerender('General');assert.equal(navigation.props.section,'General','browser Back/Forward initial changes are applied');
 assert.deepEqual(seen,['VPN'],'external route synchronization does not add redundant history changes');
-assert.equal(mounted.canonicalSettingsSection('Downloads'),'General');assert.equal(mounted.canonicalSettingsSection('Xtream'),'VOD Settings');
+assert.equal(mounted.canonicalSettingsSection('Library optimisation'),'Library optimisation');assert.equal(mounted.canonicalSettingsSection('Downloads'),'General');assert.equal(mounted.canonicalSettingsSection('Xtream'),'VOD Settings');
 const names=[];function audit(directory){for(const entry of fs.readdirSync(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())audit(file);else if(file.endsWith('.tsx'))names.push(file);}}
 audit(path.join(__dirname,'src/settings'));
 names.push(path.join(__dirname,'src/YouTubeChannelImport.tsx'));

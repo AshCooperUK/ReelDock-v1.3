@@ -1,0 +1,33 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),vm=require('node:vm'),ts=require('typescript');
+const jsx=(type,props,key)=>({type,props:props||{},key});
+function nodes(value){if(!value||typeof value!=='object')return[];if(Array.isArray(value))return value.flatMap(nodes);return [...(value.type?[value]:[]),...Object.values(value.props||value).flatMap(nodes)];}
+const row=(source,path,season,number,quality)=>({source,path,title:`Example S${season}E${number} ${quality}`,kind:'series',season,number,quality,...(source==='one'&&season===1?{durationSeconds:2550}:{})});
+const fixture={sources:[{id:'one',label:'Provider one',type:'vod',entries:[row('one','Show/S01E01-1080.strm',1,1,'1080p'),row('one','Show/S02E02.strm',2,2,'1080p')]},{id:'two',label:'Provider two',type:'vod',entries:[row('two','Show/S01E01-2160.strm',1,1,'2160p')]},{id:'nzb',label:'NZB',type:'nzb',entries:[]}]};
+const state=[],effects=[],deps=[],calls=[];let cursor=0,effectIndex=0;
+const hooks={useState(initial){const i=cursor++;if(!(i in state))state[i]=typeof initial==='function'?initial():initial;return[state[i],next=>state[i]=typeof next==='function'?next(state[i]):next];},useMemo:fn=>fn(),useEffect(fn,next){const i=effectIndex++;if(!deps[i]||next.some((value,index)=>value!==deps[i][index])){deps[i]=next;effects.push(fn);}}};
+const out={};vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/viewMedia/VodGroupDetails.tsx','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.ReactJSX}}).outputText,{exports:out,AbortController,URLSearchParams,require:name=>name==='react'?hooks:name==='../mediaDuration'?require('./media-duration-test-helper.cjs')():name==='react/jsx-runtime'?{jsx,jsxs:jsx}:name==='../api'?{api:async(...args)=>{calls.push(args);return fixture;}}:new Proxy({},{get:(_,key)=>key==='__esModule'?true:String(key)})});
+const item={id:'vodgroup:fixture',title:'Example',kind:'show',action:{type:'vod-group',item:{id:'vodgroup:fixture',kind:'show',title:'Example'}}};
+let tree;const render=()=>{cursor=effectIndex=0;tree=out.default({item,csrf:'fixture-csrf',onClose(){}});return tree;};
+const select=label=>nodes(tree).find(node=>node.type==='SelectField'&&node.props['aria-label']===label);
+const download=()=>nodes(tree).find(node=>node.type==='ServerDownload');
+(async()=>{
+ render();effects.splice(0).forEach(fn=>fn());await new Promise(resolve=>setImmediate(resolve));render();
+ assert.equal(calls.length,1);assert.match(calls[0][0],/^\/api\/view-media\/download-sources\?/);
+ assert.equal(calls[0][2],undefined,'opening the grouped title makes no acquisition request');
+ assert.equal(select('VOD season').props.value,'1');assert.equal(select('VOD episode').props.value,'1:1');
+ assert.equal(download().props.path,'Show/S01E01-1080.strm');
+ assert.equal(nodes(tree).find(node=>node.type==='MediaLengthBadge').props.length,'42m 30s');
+ const options=nodes(select('VOD version')).filter(node=>node.type==='option');assert.equal(options.length,2);
+ assert.match(options[1].props.children,/Provider two.*2160p/,'the version picker identifies source and quality');
+ select('VOD version').props.onChange({target:{value:JSON.stringify(['two','Show/S01E01-2160.strm'])}});render();
+ assert.equal(download().props.source,'two');assert.equal(download().props.path,'Show/S01E01-2160.strm');
+ assert.equal(nodes(tree).find(node=>node.type==='MediaLengthBadge').props.length,'Length unavailable','an unknown edition length never borrows the prior selected file duration');
+ select('VOD season').props.onChange({target:{value:'2'}});render();
+ assert.equal(select('VOD episode').props.value,'2:2');assert.equal(download().props.source,'one');assert.equal(download().props.path,'Show/S02E02.strm','switching episode cannot download the previous episode/version');
+ assert.equal(calls.length,1,'episode and version selection never start a download');
+ const details=nodes(tree).find(node=>node.type==='Button'&&String(node.props.children).startsWith('File details'));
+ details.props.onClick();render();assert.equal(tree.type,'M3uDetails');assert.equal(tree.props.source,'one');assert.equal(tree.props.item.path,'Show/S02E02.strm');
+ tree.props.onClose();render();assert.equal(tree.type,'DetailSheet','the file sheet swaps into the parent flow without stacking');
+ assert.equal(download().props.path,'Show/S02E02.strm');
+ console.log('VOD series: explicit source/version selection, episode resets, exact download identity, no acquisition on browse, and one-sheet file details passed.');
+})().catch(error=>{console.error(error);process.exitCode=1;});

@@ -99,11 +99,16 @@ class SavedDurationTests(unittest.TestCase):
         with self.store.connect() as db:db.execute('UPDATE m3u_catalog_titles SET data=?',(json.dumps(dict(runtimeMinutes=99)),))
         with patch('backend.m3u_player.nfo_data',side_effect=AssertionError('No per-card NFO read')),patch('backend.m3u_metadata.TMDB.get',side_effect=AssertionError('No provider lookup')),patch('subprocess.run',side_effect=AssertionError('No per-card ffprobe')):
             page=adapters.vod(self.app,self.store,dict(collection=source,media='shows',q='',offset=0,sort='title'))
-        self.assertEqual(len(page['items']),2)
-        first,second=page['items']
-        self.assertEqual(first['kind'],'show','the shared UI must distinguish this single VOD episode from a series parent')
-        self.assertEqual(first['action']['item']['kind'],'series')
-        self.assertEqual(first['durationSeconds'],2550)
+        self.assertEqual(len(page['items']),1,'VOD episodes share one series card')
+        parent=page['items'][0]
+        self.assertEqual(parent['kind'],'show');self.assertEqual(parent['action']['type'],'vod-group')
+        self.assertNotIn('durationSeconds',parent);self.assertNotIn('runtimeMinutes',parent,'a series parent never inherits one episode length')
+        from backend.view_media.download_sources import choices
+        with patch('backend.m3u_player.nfo_data',side_effect=AssertionError('No per-file NFO read')),patch('backend.m3u_metadata.TMDB.get',side_effect=AssertionError('No provider lookup')),patch('subprocess.run',side_effect=AssertionError('No per-file ffprobe')):
+            entries=[entry for source in choices(self.app,self.store,parent['action']['item'])['sources'] if source['type']=='vod' for entry in source['entries']]
+        first,second=sorted(entries,key=lambda entry:entry['number'])
+        self.assertEqual(first['kind'],'series');self.assertEqual((first['season'],first['number']),(1,1))
+        self.assertEqual((second['season'],second['number']),(1,2));self.assertEqual(first['durationSeconds'],2550)
         self.assertNotIn('durationSeconds',second)
         self.assertNotIn('runtimeMinutes',second,'a parent series runtime is never used as an individual episode length')
         with self.store.connect() as db:

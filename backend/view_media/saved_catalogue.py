@@ -39,7 +39,7 @@ def initialise(store):
 
 def signature(store):
     from ..discovery_engine import browse_cache_key
-    return hashlib.sha256(browse_cache_key(dict(media='all',q='',sort='source',offset=0,collection='',category='all',cursor=None,**{'global':True}),store).encode()).hexdigest()
+    return hashlib.sha256(browse_cache_key(dict(media='all',q='',sort='source',offset=0,collection='',category='all',cursor=None,**{'global':True}),store,catalogue_identity=True).encode()).hexdigest()
 
 def state(store,key):
     with store.connect() as db:row=db.execute('SELECT body,updated FROM view_media_cache WHERE key=?',('saved:state:'+key,)).fetchone()
@@ -56,7 +56,7 @@ def _records(sig,origin,items):
     for item in items:
         if not isinstance(item,dict) or not item.get('id') or not item.get('title') or not isinstance(item.get('action'),dict) or not valid_card(item):continue
         # Only existing public card fields may enter the searchable index.
-        allowed=('id','title','kind','image','backdrop','year','description','rating','date','dateApproximate','added','releaseDate','lastEpisodeReleased','channel','channelId','action','available','releaseCount','metadataVerified','_entry','durationSeconds','runtimeMinutes','duration','metadata_pending','count','children','season','number')
+        allowed=('id','title','kind','image','backdrop','year','description','rating','date','dateApproximate','added','releaseDate','lastEpisodeReleased','channel','channelId','action','available','releaseCount','metadataVerified','_entry','durationSeconds','runtimeMinutes','duration','metadata_pending','count','children','season','number','origins')
         item={key:value for key,value in item.items() if key in allowed}
         action=item['action'];action_type=action.get('type')
         if action_type=='discover':
@@ -77,11 +77,16 @@ def _records(sig,origin,items):
             if not children:continue
             item.update(action=dict(type='local-group',id=action['id']),children=children,count=len(children))
             item.pop('_entry',None)
+        elif action_type=='vod-group':
+            from ..discover_store import clean_item
+            try:item['action']=dict(type='vod-group',item=clean_item(action['item']),target=None if action.get('target','missing') is None else clean_item(action.get('target') or action['item']))
+            except (ValueError,KeyError,TypeError):continue
+            if not re.fullmatch(r'vodgroup:[0-9a-f]{40}',item['action']['item']['id']):continue
         elif action_type=='vod':
             entry=action.get('item') or {}
             item['action']=dict(type='vod',source=action.get('source',''),item={key:entry.get(key,'') for key in ('title','path','kind')})
         else:continue
-        if action_type!='local-group':
+        if action_type not in ('local-group','vod-group'):
             item.pop('count',None);item.pop('children',None)
         for field in ('season','number'):
             if type(item.get(field)) is not int or not 0<=item[field]<=9999:item.pop(field,None)
@@ -92,6 +97,7 @@ def _records(sig,origin,items):
         item.update(duration_fields(seconds=seconds if type(seconds) in (int,float) else None,
                                     minutes=minutes if type(minutes) in (int,float) else None,clock=clock,pending=pending is True))
         kind={'movies':'movie','shows':'show','youtube':'video','series':'show','tv':'show'}.get(item.get('kind'),item.get('kind'))
+        if 'origins' in item:item['origins']=[value for value in item['origins'] if value in ('NZB','VOD','Local Library','YouTube','Catalogue')] if isinstance(item['origins'],list) else []
         item.update(kind=kind,origin=origin)
         yield (sig,origin,item['id'],kind,(item['title']+' '+item.get('channel','')).casefold(),json.dumps(item),now)
 
@@ -179,6 +185,7 @@ def observations(app,store,sig,media='all',limit=1000):
                 # Search persists file leaves. Browsing rebuilds current show
                 # parents below, so old observed episodes cannot leak beside them.
                 if origin=='Local Library':where+=" AND kind!='show'"
+                if origin=='VOD':continue # Current grouped playlist records below replace legacy file observations.
                 if kinds:where+=' AND kind IN ('+','.join('?' for _ in kinds)+')';params.extend(sorted(kinds))
                 rows=db.execute('SELECT body,updated FROM saved_media_catalogue WHERE '+where+' ORDER BY updated DESC,id LIMIT ?',(*params,limit+1)).fetchall()
                 limited|=len(rows)>limit
@@ -189,6 +196,9 @@ def observations(app,store,sig,media='all',limit=1000):
                      dict(media='movies',q='',sort='source',offset=0,collection='trending',category='all',cursor=None),
                      dict(media='all',q='',sort='source',offset=0,collection='',category='all',cursor=None,**{'global':True})):
             prefixes.add(browse_cache_key(args,store,indexers).split(':{',1)[0]+':')
+            # Old global result policies remain useful as NZB observations.
+            # Their VOD leaves are discarded below in favour of current groups.
+            if args.get('global'):prefixes.add(browse_cache_key(args,store,indexers,catalogue_identity=True).split(':{',1)[0]+':')
         frames=db.execute('SELECT key,length(body) AS bytes,updated FROM view_media_cache WHERE '+ ' OR '.join('(key>=? AND key<?)' for _ in prefixes)+' ORDER BY updated DESC LIMIT 51',
                           [value for prefix in sorted(prefixes) for value in (prefix,prefix+'\uffff')]).fetchall() if 'view_media_cache' in tables else []
         limited|=len(frames)>50
@@ -197,7 +207,9 @@ def observations(app,store,sig,media='all',limit=1000):
             try:
                 if row['bytes']>remaining:limited=True;continue
                 args=json.loads(row['key'][row['key'].index(':{')+1:])
-                if browse_cache_key(args,store,indexers)!=row['key']:continue
+                expected={browse_cache_key(args,store,indexers)}
+                if args.get('global'):expected.add(browse_cache_key(args,store,indexers,catalogue_identity=True))
+                if row['key'] not in expected:continue
                 remaining-=row['bytes'];body=db.execute('SELECT body FROM view_media_cache WHERE key=?',(row['key'],)).fetchone()
                 result=json.loads(body['body']);items=result.get('items',[])
                 if not isinstance(items,list):continue
@@ -223,30 +235,11 @@ def observations(app,store,sig,media='all',limit=1000):
                 items.append(adapters.card(raw,dict(type='youtube',id=row['id'])))
             add('YouTube',items,overwrite=True)
         if media in ('all','movies','shows'):
-            raw_kinds=('movies',) if media=='movies' else ('series','tv') if media=='shows' else ('movies','series','tv')
-            rows=db.execute('''SELECT f.source,f.path,f.title,f.kind,s.name,t.data AS metadata,c.added
-                FROM m3u_files f JOIN m3u_sources s ON s.id=f.source
-                LEFT JOIN m3u_catalog_entries c ON c.source=f.source AND c.path=f.path
-                LEFT JOIN m3u_catalog_titles t ON t.key=c.key
-                WHERE COALESCE(json_extract(s.options,'$.enabled'),1)=1 AND f.kind IN ('''+','.join('?' for _ in raw_kinds)+''')
-                AND lower(f.path) NOT LIKE '%sample%' AND lower(f.title) NOT LIKE '%sample%'
-                ORDER BY c.added DESC,f.source,f.path LIMIT ?''',(*raw_kinds,limit+1)).fetchall()
-            limited|=len(rows)>limit;items=[];files={}
-            identities=list({(row['source'],row['path']) for row in rows[:limit]})
-            for start in range(0,len(identities),400):
-                batch=identities[start:start+400]
-                for entry in db.execute('SELECT source,path,data FROM m3u_file_info WHERE (source,path) IN (VALUES '+','.join('(?,?)' for _ in batch)+')',[v for pair in batch for v in pair]):
-                    try:files[(entry['source'],entry['path'])]=json.loads(entry['data'])
-                    except (TypeError,ValueError):pass
-            for row in rows[:limit]:
-                data=decoded(row['metadata'] or '{}');data=data if isinstance(data,dict) else {}
-                facts=files.get((row['source'],row['path']),{});facts=facts if isinstance(facts,dict) else {}
-                length=duration_fields(minutes=data.get('runtimeMinutes') if row['kind']=='movies' else None)
-                length.update(duration_fields(seconds=facts.get('durationSeconds'),minutes=facts.get('runtimeMinutes')))
-                raw=dict(id=row['source']+':'+row['path'],title=data.get('title') if data.get('locked') and data.get('title') else row['title'],kind='movie' if row['kind']=='movies' else 'show',image=data.get('artwork') or '',description=data.get('description') or '',rating=data.get('rating') or '',added=row['added'],
-                         **length)
-                items.append(adapters.card(raw,dict(type='vod',source=row['source'],item=dict(title=row['title'],path=row['path'],kind=row['kind']))))
-            add('VOD',items,overwrite=True)
+            from .vod_groups import browse as vod_browse,cards as vod_cards
+            for vod_media in (('movies','shows') if media=='all' else (media,)):
+                page=vod_browse(store,vod_media,limit=min(limit,1000),sort='new')
+                limited|=page['nextOffset'] is not None
+                add('VOD',vod_cards(page),overwrite=True)
         known=db.execute("SELECT m.path,d.updated AS stamp FROM media_files m JOIN downloads d ON d.id=m.id WHERE d.state='complete' UNION ALL SELECT destination AS path,updated AS stamp FROM m3u_downloads WHERE state='complete' UNION ALL SELECT o.path,r.updated AS stamp FROM discover_owned o JOIN discover_requests r ON r.id=o.request_id WHERE o.state='complete' ORDER BY stamp DESC LIMIT 251").fetchall()
     local=adapters.local.known_snapshot(app.config['MEDIA_DIR'],[row['path'] for row in known if row['path']],limit=limit+1,kinds={'movies':{'movies'},'shows':{'shows'},'youtube':{'youtube'}}.get(media),group_shows=True)
     if local:
@@ -279,11 +272,8 @@ def refresh_local(app,store,sig,generation):
         offset=0
         while valid(store,sig,generation):
             page=catalogue(store,media,offset=offset,limit=1000,include_entry=True)
-            vod=[]
-            for raw in page['items']:
-                entry=raw.pop('_entry');item=adapters.card(raw,dict(type='discover',item=raw))
-                if raw['kind']=='show':item['action']=dict(type='vod',source=entry['source'],item=dict(title=raw['title'],path=entry['path'],kind=entry['kind']))
-                item['_entry']=entry;vod.append(item)
+            from .vod_groups import cards as vod_cards
+            vod=vod_cards(page)
             if not valid(store,sig,generation):return False
             remember(store,sig,'VOD',vod)
             if page['nextOffset'] is None:break
@@ -475,8 +465,8 @@ def _cards(store,sig,query='',origin=None,kind=None,vod_source=None,subscription
 def browse(app,store,args,source='discover'):
     initialise(store);sig=signature(store);media=args['media'];collection=args.get('collection') or 'all'
     if source=='vod':
-        # VOD already lives in SQLite. Preserve its native per-file actions,
-        # grouping and player payload instead of reconstructing them from search.
+        # VOD lives in SQLite. Group works before paging; explicit file/version
+        # choices are resolved against the current playlist when opened.
         # Paginate: shipping the whole playlist freezes the browser.
         result=adapters.vod(app,store,dict(args,q=args.get('q',''),collection=args.get('collection',''),offset=args.get('offset') or 0,_limit=adapters.PAGE))
         return dict(result,completeSet=result.get('nextOffset') is None,nextCursor=None,loading=False,refreshing=False,
@@ -505,7 +495,8 @@ def browse(app,store,args,source='discover'):
         origin={'vod':'VOD','local':'Local Library','subscriptions':'YouTube'}[source]
         collections=[]
         if source=='vod':
-            with store.connect() as db:collections=[dict(row) for row in db.execute("SELECT id,name FROM m3u_sources WHERE coalesce(json_extract(options,'$.enabled'),1)=1 ORDER BY name")]
+            from ..m3u_availability import AVAILABLE_SQL
+            with store.connect() as db:collections=[dict(row) for row in db.execute("SELECT s.id,s.name FROM m3u_sources s WHERE "+AVAILABLE_SQL+" ORDER BY s.name")]
             collection=args.get('collection') or (collections[0]['id'] if collections else '')
             if collection and collection not in {row['id'] for row in collections}:raise ValueError('Choose an available VOD source.')
         items=_cards(store,sig,origin=origin,kind={'movies':'movie','shows':'show','youtube':'video'}.get(media,media),vod_source=collection if source=='vod' else None,subscriptions=source=='subscriptions',limit=None)

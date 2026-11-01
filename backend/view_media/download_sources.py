@@ -2,9 +2,13 @@
 import json
 import re
 from urllib.parse import urlencode
+from ..m3u_availability import AVAILABLE_SQL
 
 
 def vod_rows(store, item=None):
+    if item is not None and str(item.get('id') or '').startswith('vodgroup:'):
+        from .vod_groups import rows
+        return rows(store,item['id'])
     where="";params=[]
     if item is not None:
         # Restrict in SQLite before materialising files from large playlists.
@@ -21,11 +25,12 @@ def vod_rows(store, item=None):
           AND f.kind """ + ("='movies'" if item.get('kind')=='movie' else "IN ('series','tv')")
         params=[key.removeprefix('vod:'),tmdb,tmdb,tmdb,tmdb,external,'imdb' if item.get('kind')=='movie' else 'tvdb',external,imdb,imdb,external,'$.external_ids.'+('imdb_id' if item.get('kind')=='movie' else 'tvdb_id'),external,item.get('title',''),item.get('year','')]
     with store.connect() as db:
-        return [dict(r) for r in db.execute("""SELECT c.key,f.source,f.path,f.title,f.kind,s.name,
-            t.info,t.data,t.year FROM m3u_files f JOIN m3u_sources s ON s.id=f.source
+        return [dict(r) for r in db.execute("""SELECT c.key,f.source,f.path,f.title,f.kind,f.group_name,s.name,
+            t.info,t.data,t.year,i.data AS file_info FROM m3u_files f JOIN m3u_sources s ON s.id=f.source
             JOIN m3u_catalog_entries c ON c.source=f.source AND c.path=f.path
             JOIN m3u_catalog_titles t ON t.key=c.key
-            WHERE coalesce(json_extract(s.options,'$.enabled'),1)=1
+            LEFT JOIN m3u_file_info i ON i.source=f.source AND i.path=f.path
+            WHERE """+AVAILABLE_SQL+"""
             AND f.kind IN ('movies','series','tv')
             AND lower(f.path) NOT LIKE '%sample%' AND lower(f.title) NOT LIKE '%sample%'
             """+where+" ORDER BY s.name,f.path",params)]
@@ -42,35 +47,8 @@ def identity(row):
 
 
 def catalogue(store,media,query='',offset=0,limit=24,include_entry=False):
-    if type(limit) is not int or not 1<=limit<=1000:raise ValueError('Invalid catalogue batch.')
-    kind='movies' if media=='movies' else 'series'
-    pattern='%'+query.replace('!','!!').replace('%','!%').replace('_','!_')+'%'
-    with store.connect() as db:
-        rows=db.execute("""SELECT t.*,min(f.source) AS source,min(f.path) AS path,
-          min(f.title) AS file_title,min(f.kind) AS kind,min(f.source||char(0)||f.path) AS chosen
-          FROM m3u_catalog_titles t JOIN m3u_catalog_entries c ON c.key=t.key
-          JOIN m3u_files f ON f.source=c.source AND f.path=c.path
-          JOIN m3u_sources s ON s.id=f.source
-          WHERE coalesce(json_extract(s.options,'$.enabled'),1)=1
-          AND (f.kind=? OR (?='series' AND f.kind='tv'))
-          AND coalesce(json_extract(t.data,'$.title'),json_extract(t.info,'$.name'),f.title) LIKE ? ESCAPE '!'
-          AND lower(f.path) NOT LIKE '%sample%' AND lower(f.title) NOT LIKE '%sample%'
-          GROUP BY t.key ORDER BY coalesce(json_extract(t.data,'$.title'),json_extract(t.info,'$.name'),f.title) COLLATE NOCASE,t.key
-          LIMIT ? OFFSET ?""",(kind,kind,pattern,limit+1,offset)).fetchall()
-    items=[]
-    for raw in rows[:limit]:
-        row=dict(raw);data=json.loads(row['data'] or '{}');info=json.loads(row['info'] or '{}')
-        media_kind='movie' if row['kind']=='movies' else 'show'
-        linked=str((data.get('external_ids') or {}).get('imdb_id' if media_kind=='movie' else 'tvdb_id') or '').removeprefix('tt').lstrip('0')
-        item=dict(id=identity(row),kind=media_kind,title=data.get('title') or info.get('name') or row['file_title'],
-            year=str(row['year'] or ''),provider='VOD',image=data.get('artwork') or '',
-            description=data.get('description') or '',rating=str(data.get('rating') or ''),
-            imdbId=str(info.get('identity') or '') if info.get('provider')=='imdb' else '',
-            externalId=str(info.get('identity') or '').removeprefix('tt') if info.get('provider')==('imdb' if media_kind=='movie' else 'tvdb') else linked if linked.isdigit() else '')
-        if include_entry:
-            source,path=row['chosen'].split('\0',1);item['_entry']=dict(source=source,path=path,kind=row['kind'])
-        items.append(item)
-    return dict(items=items,nextOffset=offset+limit if len(rows)>limit else None)
+    from .vod_groups import browse
+    return browse(store,media,query,offset,limit)
 
 
 def matches(row,item):
@@ -99,12 +77,18 @@ def choices(app,store,item):
     from ..discover_sources import indexers_for
     groups={}
     for row in vod_rows(store,item):
-        match=matches(row,item)
+        match='identity' if str(item.get('id') or '').startswith('vodgroup:') else matches(row,item)
         if not match:continue
         group=groups.setdefault(row['source'],dict(id=row['source'],label=row['name'],type='vod',entries=[]))
-        marker=re.search(r'(?i)S(\d+)E(\d+)',row['path'])
-        group['entries'].append(dict(source=row['source'],path=row['path'],title=row['title'],match=match,
-            season=int(marker[1]) if marker else None,number=int(marker[2]) if marker else None))
+        from .vod_groups import facts,decoded
+        from ..media_duration import fields as duration_fields
+        info=facts(row['kind'],row['title'],row.get('group_name',''),row['path'])
+        file_info=decoded(row.get('file_info'));metadata=decoded(row.get('data'))
+        duration=duration_fields(minutes=metadata.get('runtimeMinutes') if row['kind']=='movies' else None)
+        duration.update(duration_fields(seconds=file_info.get('durationSeconds'),minutes=file_info.get('runtimeMinutes')))
+        group['entries'].append(dict(source=row['source'],path=row['path'],title=row['title'],kind=row['kind'],match=match,
+            season=info.get('season'),number=info.get('episode'),day=info.get('day') or '',
+            quality=' · '.join(dict.fromkeys(re.findall(r'(?i)\b(?:2160p|1080p|720p|480p|4k|8k|HEVC|AV1|H[ .]?26[45]|x26[45]|HDR10?\+?|BluRay|WEB[ .-]?DL)\b',row['title']+' '+row['path']))),**duration))
     sources=list(groups.values())
     try: available=bool(indexers_for(app,store))
     except ValueError:available=False

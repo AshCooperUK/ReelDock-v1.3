@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from contextlib import nullcontext
 
@@ -31,6 +32,32 @@ def subscription_paused(store,job):
 
 class DownloadSkipped(ValueError):
     pass
+
+
+class YouTubeFailure(ValueError):
+    """A public error plus a private, validated provider retry deadline."""
+    def __init__(self, message, retry_at=0):
+        super().__init__(message)
+        self.retry_at = retry_at
+
+
+MAX_ATTEMPTS = 6  # The initial attempt plus five automatic retries.
+RETRY_DELAYS = (30, 60, 120, 300, 600)
+
+
+def provider_retry_at(output, now=None):
+    """Accept only Retry-After values, never store the surrounding diagnostics."""
+    now = time.time() if now is None else now
+    deadline = 0
+    for value in re.findall(r'(?im)^\s*(?:ReelDock:)?Retry-After\s*[:=]\s*([^\r\n]+)', output):
+        try:
+            value = value.strip()
+            candidate = now + int(value) if value.isdigit() else parsedate_to_datetime(value).timestamp()
+            if math.isfinite(candidate) and candidate > now:
+                deadline = max(deadline, candidate)
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return deadline
 
 
 QUALITIES = ('480', '720', '1080', '2160')
@@ -59,7 +86,10 @@ def check_attempt(store,job,stop):
         if cancelled_in(db,job['id']):raise ValueError('Cancelled.')
     from .acquisition import held
     from .download_control import paused
-    if held(store) or paused(store, 'youtube') or subscription_paused(store,job):raise DownloadPaused()
+    if subscription_paused(store,job):raise DownloadPaused('Subscription paused. Download will restart when resumed.')
+    if held(store) or paused(store, 'youtube'):raise DownloadPaused('Downloads paused. This video will restart when resumed.')
+    from .vpn import downloads_blocked
+    if downloads_blocked('youtube'):raise DownloadPaused('Waiting for the current YouTube VPN connection.')
 
 
 def failure_category(output):
@@ -99,7 +129,8 @@ def failed_download(store,attempts):
         'network':'Could not connect to YouTube reliably. Check network access before retrying.',
         'forbidden':'YouTube rejected this request (HTTP 403). Check video access and the current network.',
     }
-    raise ValueError(messages.get(category,'YouTube download failed. Check video availability and saved cookies, then retry.'))
+    raise YouTubeFailure(messages.get(category,'YouTube download failed. Check video availability and saved cookies, then retry.'),
+                         max((provider_retry_at(output) for _,output in attempts),default=0))
 
 
 def manual_details(store,job,folder):
@@ -144,6 +175,14 @@ def initialise(store):
             db.execute("ALTER TABLE downloads ADD COLUMN phase TEXT NOT NULL DEFAULT ''")
         if 'processing_info' not in {row[1] for row in db.execute('PRAGMA table_info(downloads)')}:
             db.execute("ALTER TABLE downloads ADD COLUMN processing_info TEXT NOT NULL DEFAULT ''")
+        columns = {row[1] for row in db.execute('PRAGMA table_info(downloads)')}
+        for name, declaration in (
+            ('attempt_count', 'INTEGER NOT NULL DEFAULT 0'),
+            ('retry_at', 'REAL NOT NULL DEFAULT 0'),
+            ('retry_error', "TEXT NOT NULL DEFAULT ''"),
+            ('quality_inherited', 'INTEGER NOT NULL DEFAULT 0'),
+        ):
+            if name not in columns:db.execute(f'ALTER TABLE downloads ADD COLUMN {name} {declaration}')
         # Safe on existing databases: IF NOT EXISTS builds each index once.
         # state/updated serves the Activity feed and failure alerts;
         # created/id serves Local Library paging.
@@ -151,7 +190,7 @@ def initialise(store):
         db.execute('CREATE INDEX IF NOT EXISTS downloads_created ON downloads(created,id)')
 
 
-def enqueue(store, video, quality, automatic=False, *, transaction=None):
+def enqueue(store, video, quality, automatic=False, *, transaction=None, quality_inherited=False, restart=False):
     from .acquisition import ensure_open
     ensure_open(store)
     from .media_management.store import policy_blocks
@@ -166,11 +205,15 @@ def enqueue(store, video, quality, automatic=False, *, transaction=None):
             if automatic:return
             raise ValueError('This video was cleared. Select Download or Retry explicitly to resume it.')
         if automatic and policy_blocks(store,'video:'+video['id']):return
-        db.execute('''INSERT INTO downloads(id,title,quality,state,created,updated,automatic)
-            VALUES (?,?,?,'queued',?,?,?) ON CONFLICT(id) DO UPDATE SET
-            quality=excluded.quality,automatic=excluded.automatic,state='queued',progress=0,message='',updated=excluded.updated
+        previous=db.execute('SELECT attempt_count FROM downloads WHERE id=?',(video['id'],)).fetchone()
+        if automatic and not restart and previous and previous['attempt_count']>=MAX_ATTEMPTS:return
+        db.execute('''INSERT INTO downloads(id,title,quality,state,created,updated,automatic,quality_inherited)
+            VALUES (?,?,?,'queued',?,?,?,?) ON CONFLICT(id) DO UPDATE SET
+            quality=excluded.quality,automatic=excluded.automatic,quality_inherited=excluded.quality_inherited,
+            state='queued',progress=0,message='',phase='',attempt_count=0,retry_at=0,retry_error='',updated=excluded.updated
             WHERE downloads.state IN ('failed','cancelled','complete','skipped','expired')''',
-            (video['id'], video['title'], quality, time.time(), time.time(), int(automatic)))
+            (video['id'], video['title'], quality, time.time(), time.time(), int(automatic),
+             int(bool(quality_inherited))))
         if not automatic and db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='discover_requests'").fetchone():
             db.execute('''UPDATE discover_requests SET state='queued',progress=0,message='Queued with yt-dlp.',updated=?
                 WHERE kind='video' AND state IN ('failed','cancelled') AND json_extract(body,'$.videoId')=?
@@ -191,7 +234,7 @@ def command(video_id, quality, folder, cookie=None):
     # Prefer H.264/AAC for broad media-server compatibility; fall back to another MP4 if needed.
     fmt = (f'bv[ext=mp4][vcodec^=avc1][height<={quality}]+ba[ext=m4a]/'
            f'b[ext=mp4][height<={quality}]/bv[ext=mp4][height<={quality}]+ba[ext=m4a]')
-    args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-playlist',
+    args = [sys.executable, '-m', 'backend.youtube_download', '--ignore-config', '--no-playlist',
             '--no-colors', '--newline', '--progress', '--progress-delta', '1',
             '--progress-template', 'download:ReelDock:%(progress.downloaded_bytes)s:%(progress.total_bytes,progress.total_bytes_estimate)s',
             '--socket-timeout', '20', '--retries', '3', '--fragment-retries', '3',
@@ -263,28 +306,36 @@ def run_download(store, media, job, stop):
         # requiring a separate automation type/length inspection to succeed.
         needs_probe=automatic
         if needs_probe and rules_apply(rule):
-            args=[sys.executable,'-m','yt_dlp','--ignore-config','--no-playlist','--js-runtimes','node','--socket-timeout','20','--retries','1','--skip-download','--print',TYPE_PROBE_TEMPLATE]
+            args=[sys.executable,'-m','backend.youtube_download','--ignore-config','--no-playlist','--js-runtimes','node','--socket-timeout','20','--retries','1','--skip-download','--print',TYPE_PROBE_TEMPLATE]
             if snapshot and options['authenticated_retry']:args+=['--cookies',str(snapshot)]
             args+=['--','https://www.youtube.com/watch?v='+job['id']]
             with (folder/'probe.json').open('w+b') as probe, (folder/'probe-error.log').open('w+b') as errors:
+                attempts=[]
                 check_attempt(store,job,stop)
                 try:
                     result=subprocess.run(args,stdout=probe,stderr=errors,timeout=120,env=subprocess_env('youtube'))
                 except subprocess.TimeoutExpired:
-                    if '--cookies' not in args:raise
+                    errors.write(b'\nERROR: YouTube metadata connection timed out.\n')
                     result=subprocess.CompletedProcess(args,1)
                 check_attempt(store,job,stop)
                 if result.returncode and '--cookies' in args:
+                    errors.seek(0,2);errors.seek(max(0,errors.tell()-32768))
+                    attempts.append((True,errors.read().decode('utf-8','replace')))
+                    if provider_retry_at(attempts[-1][1]):failed_download(store,attempts)
                     index=args.index('--cookies');del args[index:index+2]
                     snapshot=None
                     probe.seek(0);probe.truncate();errors.seek(0);errors.truncate()
                     check_attempt(store,job,stop)
-                    result=subprocess.run(args,stdout=probe,stderr=errors,timeout=120,env=subprocess_env('youtube'))
+                    try:
+                        result=subprocess.run(args,stdout=probe,stderr=errors,timeout=120,env=subprocess_env('youtube'))
+                    except subprocess.TimeoutExpired:
+                        errors.write(b'\nERROR: YouTube metadata connection timed out.\n')
+                        result=subprocess.CompletedProcess(args,1)
                     check_attempt(store,job,stop)
                 if result.returncode:
                     errors.seek(0,2);errors.seek(max(0,errors.tell()-32768))
-                    cookie_failure(store,errors.read().decode('utf-8','replace'))
-                    raise ValueError('Could not inspect the video type. Retry after checking YouTube access.')
+                    attempts.append(('--cookies' in args,errors.read().decode('utf-8','replace')))
+                    failed_download(store,attempts)
                 probe.seek(0); raw=probe.read(5_000_001)
             if len(raw)>5_000_000:raise ValueError('Video metadata exceeded the inspection limit.')
             info=json.loads(raw)
@@ -301,7 +352,7 @@ def run_download(store, media, job, stop):
                 '--no-simulate','--print-to-file',MANUAL_DETAILS_TEMPLATE,
                 str(folder/MANUAL_DETAILS_FILE).replace('%','%%'),
                 '--match-filter',MANUAL_LIVE_FILTER]
-        if options['hardware_encoding'] and options['sponsorblock']=='remove':args[args.index('yt_dlp')]='backend.ytdlp_runner'
+        if options['hardware_encoding'] and options['sponsorblock']=='remove':args[args.index('backend.youtube_download')]='backend.ytdlp_runner'
         if options['sponsorblock']!='off':
             index=args.index('--')
             args[index:index]=['--sponsorblock-mark' if options['sponsorblock']=='mark' else '--sponsorblock-remove','sponsor','--embed-chapters']
@@ -324,6 +375,7 @@ def run_download(store, media, job, stop):
             if code==0:break
             lowered=output.lower()
             attempts.append(('--cookies' in args,output))
+            if provider_retry_at(output):failed_download(store,attempts)
             if not fallback and ((not automatic) or options['convert_fallback'] and failure_category(lowered)=='format'):
                 args[args.index('-f')+1]=f'bv[height<={job["quality"]}]+ba/b[height<={job["quality"]}]/bv+ba/b'
                 fallback=True
@@ -393,7 +445,7 @@ def check_rules(store, job, automatic, video, rule, duration, stage):
     """
     from .channel_downloads import eligible, exclusion, rule_conflict, rules_apply, length_conflict, request_rule
     from .download_options import read
-    if automatic and rule.get('subscription_paused'):raise DownloadPaused()
+    if automatic and rule.get('subscription_paused'):raise DownloadPaused('Subscription paused. Download will restart when resumed.')
     rule=request_rule(store,video,rule,automatic)
     prefix='Not downloaded' if stage=='start' else 'Not saved'
     if not automatic:
@@ -423,7 +475,7 @@ def recheck_before_save(store, job, automatic, duration):
 
 def update_progress(store,video_id,message,phase='processing'):
     with store.connect() as db:
-        db.execute("UPDATE downloads SET message=?,phase=?,updated=? WHERE id=? AND state='downloading'",(message,phase,time.time(),video_id))
+        db.execute("UPDATE downloads SET message=CASE WHEN attempt_count>1 THEN 'Automatic retry '||(attempt_count-1)||' of 5. '||? ELSE ? END,phase=?,updated=? WHERE id=? AND state='downloading'",(message,message,phase,time.time(),video_id))
 
 
 def process_line(store,video_id,line):
@@ -433,7 +485,7 @@ def process_line(store,video_id,line):
             _,done,total=line.split(':');percent=max(0,min(99,float(done)/float(total)*100))
         except (ValueError,ZeroDivisionError):return
         with store.connect() as db:
-            db.execute("UPDATE downloads SET progress=?,phase='downloading',message='Downloading video and audio from YouTube.',updated=? WHERE id=? AND state='downloading'",(percent,time.time(),video_id))
+            db.execute("UPDATE downloads SET progress=?,phase='downloading',message=CASE WHEN attempt_count>1 THEN 'Automatic retry '||(attempt_count-1)||' of 5. Downloading video and audio from YouTube.' ELSE 'Downloading video and audio from YouTube.' END,updated=? WHERE id=? AND state='downloading'",(percent,time.time(),video_id))
         return
     stages=(
         ('ReelDock GPU:', 'encoding', 'Encoding sponsor cuts using VAAPI hardware acceleration.'),
@@ -476,10 +528,10 @@ def run_process(store,job,stop,args,log_path,root):
     progress_path=log_path.with_suffix('.ffmpeg-progress')
     progress_path.unlink(missing_ok=True)
     progress_args=['-progress',str(progress_path),'-stats_period','2']
-    if '-m' in args and any(module in args for module in ('yt_dlp','backend.ytdlp_runner')):
+    if '-m' in args and any(module in args for module in ('yt_dlp','backend.youtube_download','backend.ytdlp_runner')):
         args[args.index('--'):args.index('--')]=['--postprocessor-args','ffmpeg:'+shlex.join(progress_args)]
     elif Path(args[0]).stem=='ffmpeg':args[1:1]=progress_args
-    if '-m' in args and any(module in args for module in ('yt_dlp','backend.ytdlp_runner')):
+    if '-m' in args and any(module in args for module in ('yt_dlp','backend.youtube_download','backend.ytdlp_runner')):
         update_progress(store,job['id'],'Checking video availability and selecting streams.','preparing')
     with log_path.open('w+',encoding='utf-8') as log:
         proc=subprocess.Popen(args,stdout=log,stderr=subprocess.STDOUT,start_new_session=os.name!='nt',env=subprocess_env('youtube'))
@@ -490,7 +542,7 @@ def run_process(store,job,stop,args,log_path,root):
                 if stop.wait(1):raise InterruptedError()
                 with store.connect() as db:
                     if cancelled_in(db,job['id']):raise ValueError('Cancelled.')
-                if subscription_paused(store,job):raise DownloadPaused()
+                if subscription_paused(store,job):raise DownloadPaused('Subscription paused. Download will restart when resumed.')
                 should_pause=paused(store, 'youtube')
                 if should_pause and not suspended:
                     os.killpg(proc.pid,signal.SIGSTOP)
@@ -555,20 +607,30 @@ def recover(store):
 def tick(store, media, stop, runner=run_download):
     from .download_options import read
     from .acquisition import held
+    if stop.is_set():return
     options=read(store, 'youtube')
     if options['pause_downloads'] or held(store):return
+    from .vpn import downloads_blocked
+    if downloads_blocked('youtube'):return
     if options['sleep_interval'] and time.time()<float(store.get('download_finished_at','0'))+options['sleep_interval']:return
     with store.connect() as db:
         db.execute('BEGIN IMMEDIATE')
         from .media_holds import blocked_in
-        rows=db.execute("SELECT d.* FROM downloads d WHERE d.state='queued' AND (d.automatic=0 OR NOT EXISTS (SELECT 1 FROM videos v JOIN download_rules r ON r.channel=v.channel WHERE v.id=d.id AND r.subscription_paused=1)) ORDER BY d.created,d.id LIMIT 128").fetchall()
+        rows=db.execute("SELECT d.* FROM downloads d WHERE d.state='queued' AND d.retry_at<=? AND (d.automatic=0 OR NOT EXISTS (SELECT 1 FROM videos v JOIN download_rules r ON r.channel=v.channel WHERE v.id=d.id AND r.subscription_paused=1)) ORDER BY d.created,d.id LIMIT 128",(time.time(),)).fetchall()
         job=None
         for row in rows:
             if blocked_in(db,['video:'+row['id'],'managed:video:'+row['id']]):
                 db.execute("UPDATE downloads SET state='cancelled',message='Cleared; automatic retries stopped.',updated=? WHERE id=?",(time.time(),row['id']))
                 continue
             job=dict(row)
-            db.execute("UPDATE downloads SET state='downloading',phase='preparing',processing_info='',message='Preparing download.',updated=? WHERE id=?", (time.time(), job['id']))
+            job['retry_exhausted']=job['attempt_count']>=MAX_ATTEMPTS
+            if not job['retry_exhausted']:job['attempt_count']+=1
+            if job.get('quality_inherited'):
+                saved=db.execute('SELECT channel FROM videos WHERE id=?',(job['id'],)).fetchone()
+                from .channel_downloads import preferences
+                job['quality']=preferences(store,saved['channel'] if saved else '')['quality']
+            message='Checking the final attempt’s completed file.' if job['retry_exhausted'] else 'Preparing download.' if job['attempt_count']==1 else f'Automatic retry {job["attempt_count"]-1} of 5. Preparing download.'
+            db.execute("UPDATE downloads SET state='downloading',quality=?,phase='preparing',processing_info='',message=?,attempt_count=?,retry_at=0,updated=? WHERE id=?", (job['quality'],message,job['attempt_count'],time.time(), job['id']))
             break
         if job is None:return
     try:
@@ -581,6 +643,8 @@ def tick(store, media, stop, runner=run_download):
             if not record or record['path']!=planned_path(store,media,request,target.suffix):target=None
         notice=''
         if not target or job.get('replace_existing'):
+            if job['retry_exhausted']:
+                raise YouTubeFailure(job['retry_error'] or 'The final download attempt was interrupted.')
             active = runner
             from .discover_youtube import is_discover, run as run_discover
             if is_discover(store, job['id']):
@@ -595,7 +659,7 @@ def tick(store, media, stop, runner=run_download):
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if cancelled_in(db,job['id']):raise ValueError('Cancelled.')
-            db.execute("UPDATE downloads SET state='complete',progress=100,message=?,replace_existing=0,updated=? WHERE id=?",
+            db.execute("UPDATE downloads SET state='complete',progress=100,message=?,replace_existing=0,retry_at=0,retry_error='',updated=? WHERE id=?",
                        ('Saved on NAS'+(' · '+notice if notice else ''),time.time(),job['id']))
         from .view_media.local import invalidate
         invalidate(media)
@@ -604,17 +668,17 @@ def tick(store, media, stop, runner=run_download):
             if row:
                 from .emby import queue_refresh
                 queue_refresh(store,row[0])
-    except DownloadPaused:
+    except DownloadPaused as exc:
         # A concurrent Cancel all must win over returning this job to the queue.
         with store.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             current=db.execute('SELECT state FROM downloads WHERE id=?',(job['id'],)).fetchone()
             cancelling=cancelled_in(db,job['id'])
             if current and current[0] in ('downloading','cancelling'):
-                db.execute('UPDATE downloads SET state=?,message=?,updated=? WHERE id=?',
+                db.execute('UPDATE downloads SET state=?,message=?,attempt_count=MAX(0,attempt_count-?),updated=? WHERE id=?',
                            ('cancelled' if cancelling else 'queued',
-                            'Cancelled' if cancelling else 'Subscription paused. Download will restart when resumed.',
-                            time.time(),job['id']))
+                            'Cancelled' if cancelling else str(exc) or 'Downloads paused. This video will restart when resumed.',
+                            int(not job['retry_exhausted']),time.time(),job['id']))
         if cancelling:keep_replaced_file(store,media,job,'Cancelled')
     except DownloadSkipped as exc:
         with store.connect() as db:
@@ -639,8 +703,12 @@ def tick(store, media, stop, runner=run_download):
             cancelled = cancelled_in(db,job['id'])
             # Keep the reason when channel settings stopped the download.
             reason = current[1] if cancelled and current and current[1].startswith('Cancelled: ') else 'Cancelled'
-            db.execute('UPDATE downloads SET state=?,progress=0,message=?,updated=? WHERE id=?',
-                       ('cancelled' if cancelled else 'failed',reason if cancelled else message,time.time(),job['id']))
+            retry=not cancelled and current and current[0]=='downloading' and job['attempt_count']<MAX_ATTEMPTS
+            deadline=max(time.time()+RETRY_DELAYS[job['attempt_count']-1],getattr(exc,'retry_at',0)) if retry else 0
+            status=f'Automatic retry {job["attempt_count"]} of 5 scheduled. Waiting before trying YouTube again.' if retry else message+' Five automatic retries have been used. Select Retry to start again.'
+            db.execute('UPDATE downloads SET state=?,progress=0,message=?,phase=?,retry_at=?,retry_error=?,updated=? WHERE id=?',
+                       ('cancelled' if cancelled else 'queued' if retry else 'failed',reason if cancelled else status,
+                        'retry_wait' if retry else '',deadline,'' if cancelled else message,time.time(),job['id']))
         if cancelled:keep_replaced_file(store,media,job,reason)
 
     finally:

@@ -333,8 +333,10 @@ class DownloadTests(unittest.TestCase):
         def fail(*args):
             raise OSError('private cookie content')
         downloads.tick(self.store,self.media,threading.Event(),fail)
-        self.assertEqual(self.row()['state'],'failed')
+        self.assertEqual(self.row()['state'],'queued')
+        self.assertEqual(self.row()['attempt_count'],1)
         self.assertNotIn('private cookie',self.row()['message'])
+        self.assertNotIn('private cookie',self.row()['retry_error'])
         self.post({'action':'retry','id':VIDEO['id']})
         self.assertEqual(self.row()['state'],'queued')
 
@@ -413,7 +415,8 @@ class DownloadTests(unittest.TestCase):
             if args[0]=='ffmpeg':return 1,'conversion failed'
             completed_media(log.parent,job,b'source');return 0,''
         with patch('backend.downloads.run_process',side_effect=process):downloads.tick(self.store,self.media,threading.Event())
-        self.assertEqual(self.row()['state'],'failed')
+        self.assertEqual(self.row()['state'],'queued')
+        self.assertIn('conversion failed',self.row()['retry_error'])
         self.assertEqual(target.read_bytes(),b'existing file')
 
     def test_expired_cookies_and_api_quota_do_not_block_known_download(self):
@@ -484,7 +487,8 @@ class DownloadTests(unittest.TestCase):
             db.execute('UPDATE downloads SET replace_existing=1')
         with patch('backend.downloads.run_process',return_value=(1,'FFmpeg processing failed')):
             downloads.tick(self.store,self.media,threading.Event())
-        self.assertEqual(self.row()['state'],'failed')
+        self.assertEqual(self.row()['state'],'queued')
+        self.assertEqual(self.row()['attempt_count'],1)
         self.assertEqual(target.read_bytes(),b'existing file')
 
     def test_gpu_conversion_failure_retries_cpu_before_publishing(self):

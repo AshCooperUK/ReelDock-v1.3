@@ -436,7 +436,7 @@ class ViewMediaTests(unittest.TestCase):
         self.assertEqual(_image(item['image']),item['image'])
         self.assertIn('https://image.tmdb.org', self.get('/app/').headers['Content-Security-Policy'].split('img-src ')[1].split(';')[0])
 
-    def test_vod_federation_active_sources_identity_choices_and_samples(self):
+    def test_vod_federation_available_sources_identity_choices_and_samples(self):
         import json
         from backend.view_media import download_sources as ds
         with self.store.connect() as db:
@@ -446,6 +446,7 @@ class ViewMediaTests(unittest.TestCase):
                     db.execute("INSERT INTO m3u_files VALUES(?,?,?,?,?,?)",(source,path,title,'movies','',''))
                     db.execute("INSERT OR IGNORE INTO m3u_catalog_titles(key,info,year,data) VALUES(?,?,?,?)",(key,json.dumps({'name':title,'provider':'imdb','identity':imdb}),2026,'{}'))
                     db.execute("INSERT INTO m3u_catalog_entries VALUES(?,?,?,?,?)",(source,path,key,0,''))
+            db.execute("INSERT INTO m3u_removals VALUES('off','queued')")
         with patch('backend.discover_sources.indexers_for',return_value=[{}]):
             options=ds.choices(self.app,self.store,dict(id='tmdb:movie:3',kind='movie',title='Film',year='2026',externalId='1234567'))
         self.assertEqual([s['id'] for s in options['sources']],['nzb','one','two'])

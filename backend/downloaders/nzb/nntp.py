@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import socket
 import ssl
 import threading
@@ -12,6 +13,14 @@ class NntpError(ValueError):
     def __init__(self, code: int, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class NntpAuthenticationError(NntpError):
+    """Account authentication failed; retrying every article cannot fix it."""
+
+
+class NntpConnectionBusy(NntpError):
+    """The provider explicitly reported its account connection allowance."""
 
 
 class _Reader:
@@ -78,7 +87,11 @@ class NntpClient:
             self.reader = _Reader(raw, self.checkpoint)
         code, text = self._status()
         if code not in {200, 201}:
-            raise NntpError(code, auth_failure(code, text) if _busy(code, text) else (text or "The Usenet server refused the connection."))
+            if _busy(code, text):
+                raise NntpConnectionBusy(code, auth_failure(code, text))
+            if code in {481, 482, 502} or "auth" in text.lower():
+                raise NntpAuthenticationError(code, auth_failure(code, text))
+            raise NntpError(code, _public(text) or "The Usenet server refused the connection.")
         if self.username:
             self._authenticate()
 
@@ -112,6 +125,8 @@ class NntpClient:
     def body(self, message_id: str, groups: tuple[str, ...] = ()) -> list[bytes]:
         code, text = self._article("BODY", message_id, groups)
         if code != 222 or self.reader is None:
+            if code in {481, 482, 502} or _busy(code, text):
+                raise _account_error(code, text)
             raise NntpError(code, _public(text) or "That article is not on this server.")
         return self.reader.dot_lines()
 
@@ -122,6 +137,8 @@ class NntpClient:
             return True
         if code in {420, 423, 430}:
             return False
+        if code in {481, 482, 502} or _busy(code, text):
+            raise _account_error(code, text)
         raise NntpError(code, _public(text) or "That article is not on this server.")
 
     def _article(self, verb: str, message_id: str, groups: tuple[str, ...]) -> tuple[int, str]:
@@ -145,10 +162,10 @@ class NntpClient:
         if code == 281:
             return
         if code != 381:
-            raise NntpError(code, "The Usenet server rejected the username.")
+            raise _account_error(code, text)
         code, text = self._command(f"AUTHINFO PASS {self.password}")
         if code != 281:
-            raise NntpError(code, auth_failure(code, text))
+            raise _account_error(code, text)
 
     def _command(self, command: str) -> tuple[int, str]:
         if self._aborted.is_set():
@@ -168,15 +185,24 @@ class NntpClient:
 
 
 def _busy(code: int, text: str) -> bool:
+    # 502 also means authentication/access denied. Its number alone cannot
+    # establish that the account is out of connections.
     lowered = (text or "").lower()
-    return code == 502 or "too many" in lowered or "connection limit" in lowered
+    return bool(re.search(r'\b(?:too many (?:simultaneous |concurrent |active |open )?connections'
+                          r'|connections? limit|(?:maximum|max)(?: number of)? connections'
+                          r'|connections exceeded)\b', lowered))
 
 
 def auth_failure(code: int, text: str) -> str:
     """A full account is not a wrong password. The download can wait for a free connection."""
     if _busy(code, text):
         return "The Usenet account is using all of its connections. This download will start when one finishes."
-    return "The Usenet server rejected the password."
+    return "The Usenet server rejected authentication. Check the account username and password."
+
+
+def _account_error(code: int, text: str) -> NntpError:
+    error = NntpConnectionBusy if _busy(code, text) else NntpAuthenticationError
+    return error(code, auth_failure(code, text))
 
 
 def _public(text: str) -> str:

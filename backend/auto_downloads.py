@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +21,7 @@ from .vpn.transport import youtube as youtube_traffic, vod, subprocess_env
 
 LIMITS = {'.strm': 16_384, '.torrent': 2_000_000, '.nzb': 20_000_000}
 KINDS = {'.strm': 'strm', '.torrent': 'torrent', '.nzb': 'nzb'}
+_youtube_arrival = ContextVar('youtube_auto_arrival',default=None)
 class _HeldSource(ValueError):
     pass
 
@@ -31,6 +33,15 @@ def initialise(store):
     with store.connect() as db:
         db.execute('''CREATE TABLE IF NOT EXISTS auto_downloads (
             key TEXT PRIMARY KEY, name TEXT, kind TEXT, state TEXT, message TEXT, updated REAL)''')
+        db.execute('''CREATE TABLE IF NOT EXISTS youtube_drop_retries (
+            key TEXT PRIMARY KEY, attempt_count INTEGER NOT NULL DEFAULT 0,
+            retry_at REAL NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+            root TEXT NOT NULL DEFAULT '', target TEXT NOT NULL DEFAULT '',
+            bytes INTEGER NOT NULL DEFAULT 0, digest TEXT NOT NULL DEFAULT '',
+            info TEXT NOT NULL DEFAULT '', stage TEXT NOT NULL DEFAULT '',
+            generation INTEGER NOT NULL DEFAULT 0)''')
+        if 'generation' not in {row[1] for row in db.execute('PRAGMA table_info(youtube_drop_retries)')}:
+            db.execute('ALTER TABLE youtube_drop_retries ADD COLUMN generation INTEGER NOT NULL DEFAULT 0')
 
 
 def enabled(store, engine=None):
@@ -142,7 +153,7 @@ def _key(name, size, mtime_ns, ctime_ns, device, inode):
     return hashlib.sha256(f'v2\0{name}\0{size}\0{mtime_ns}\0{ctime_ns}\0{device}\0{inode}'.encode()).hexdigest()
 
 
-def _claim(store, key, name, kind):
+def _claim(store, key, name, kind, engine=None):
     """One process owns a file arrival; repeated scans do not claim it again."""
     now = time.time()
     with store.connect() as db:
@@ -154,8 +165,103 @@ def _claim(store, key, name, kind):
             return False
         if row and row['state'] == 'failed' and now - row['updated'] < 900:
             return False
+        recovering=False
+        if engine=='youtube':
+            from .downloads import MAX_ATTEMPTS
+            retry=db.execute('SELECT * FROM youtube_drop_retries WHERE key=?',(key,)).fetchone()
+            from .acquisition import generation
+            current_generation=generation(store)
+            if retry and retry['generation']!=current_generation:
+                db.execute("UPDATE auto_downloads SET state='held',message='Downloads were stopped. This source remains stopped.',updated=? WHERE key=?",(now,key))
+                db.execute("UPDATE activity_tasks SET state='cancelled',message='Downloads were stopped. This source remains stopped.',updated=? WHERE id=?",(now,'auto-'+key[:20]))
+                return False
+            if retry and retry['retry_at']>now:return False
+            if retry and retry['attempt_count']>=MAX_ATTEMPTS:
+                if not retry['target'] or not row or row['state']=='failed':return False
+                recovering=True
+            db.execute('''INSERT INTO youtube_drop_retries(key,attempt_count,generation) VALUES(?,1,?)
+                ON CONFLICT(key) DO UPDATE SET attempt_count=attempt_count+?''',(key,current_generation,0 if recovering else 1))
         db.execute('INSERT OR REPLACE INTO auto_downloads VALUES(?,?,?,?,?,?)', (key, name[:180], kind, 'running', 'Starting.', now))
-    return True
+    return 'recover' if recovering else True
+
+
+def _youtube_checkpoint(store,video_id,stop,*,heartbeat=True):
+    from .downloads import DownloadPaused
+    from .download_control import paused
+    from .acquisition import held,generation
+    from .vpn import downloads_blocked
+    from .media_holds import blocked
+    if stop.is_set():raise InterruptedError()
+    if blocked(store,['video:'+video_id,'managed:video:'+video_id]):
+        raise _HeldSource('This video was cleared. Automatic retries remain stopped.')
+    arrival=_youtube_arrival.get()
+    with store.connect() as db:
+        receipt=db.execute('SELECT generation FROM youtube_drop_retries WHERE key=?',(arrival['key'],)).fetchone() if arrival else None
+    if held(store) or receipt and receipt['generation']!=generation(store):
+        raise _HeldSource('Downloads were stopped. This source remains stopped until explicitly started again.')
+    if paused(store,'youtube') or downloads_blocked('youtube'):
+        raise DownloadPaused('Waiting for current YouTube download controls or VPN connection.')
+    if heartbeat and arrival and time.monotonic()-arrival.get('heartbeat',0)>=5:
+        with store.connect() as db:
+            db.execute("UPDATE auto_downloads SET updated=? WHERE key=? AND state='running'",(time.time(),arrival['key']))
+        arrival['heartbeat']=time.monotonic()
+
+
+def _youtube_failure(store,key,exc,*,paused=False):
+    """One source arrival owns one durable budget, including worker restarts."""
+    from .downloads import MAX_ATTEMPTS,RETRY_DELAYS
+    message=str(exc) if isinstance(exc,ValueError) else 'YouTube download interrupted. Check media folder access and free space.'
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        row=db.execute('SELECT attempt_count,generation FROM youtube_drop_retries WHERE key=?',(key,)).fetchone()
+        from .acquisition import held,generation
+        if held(store) or row['generation']!=generation(store):
+            status='Downloads were stopped. This source remains stopped until explicitly started again.'
+            db.execute("UPDATE auto_downloads SET state='held',message=?,updated=? WHERE key=?",(status,time.time(),key))
+            return 'cancelled',status
+        arrival=_youtube_arrival.get() or {}
+        count=max(0,row['attempt_count']-int(paused and not arrival.get('recovery')))
+        retry=paused or count<MAX_ATTEMPTS
+        deadline=max(time.time()+(5 if paused else RETRY_DELAYS[max(0,count-1)]),getattr(exc,'retry_at',0)) if retry else 0
+        status=str(exc) if paused else f'Automatic retry {count} of 5 scheduled. Waiting before trying YouTube again.' if retry else message+' Five automatic retries have been used.'
+        db.execute('UPDATE youtube_drop_retries SET attempt_count=?,retry_at=?,error=? WHERE key=?',(count,deadline,message,key))
+        db.execute('UPDATE auto_downloads SET state=?,message=?,updated=? WHERE key=?',('retry' if retry else 'failed',status,time.time(),key))
+    return 'queued' if retry else 'failed',status
+
+
+def _youtube_receipt(store,root,info=None,output=None,target=None,*,expected_id=None):
+    """Prepared output hashes prevent duplicate files after an interrupted publish."""
+    arrival=_youtube_arrival.get()
+    if not arrival:return None
+    from .media_library import contained
+    import json
+    key=arrival['key']
+    if output is not None:
+        if expected_id and (not isinstance(info,dict) or info.get('id')!=expected_id):
+            raise ValueError('YouTube metadata did not match the requested video. Nothing was published.')
+        size=output.stat().st_size
+        with output.open('rb') as source:digest=hashlib.file_digest(source,'sha256').hexdigest()
+        with store.connect() as db:
+            db.execute('UPDATE youtube_drop_retries SET root=?,target=?,bytes=?,digest=?,info=?,stage=\'prepared\' WHERE key=?',
+                       (str(root.resolve()),str(target.relative_to(root.resolve())),size,digest,json.dumps(info),key))
+        return None
+    with store.connect() as db:row=db.execute('SELECT * FROM youtube_drop_retries WHERE key=?',(key,)).fetchone()
+    if row and row['target']:
+        details=json.loads(row['info'])
+        if expected_id and (not isinstance(details,dict) or details.get('id')!=expected_id):
+            raise ValueError('The earlier output does not match the requested YouTube video. The existing file was kept.')
+        unresolved=Path(row['root'])/row['target']
+        if unresolved.is_symlink():raise ValueError('The earlier output cannot be verified. The existing file was kept.')
+        saved=contained(row['root'],row['target'])
+        if saved.exists():
+            valid=saved.is_file() and not saved.is_symlink() and saved.stat().st_size==row['bytes']
+            if valid:
+                with saved.open('rb') as source:valid=hashlib.file_digest(source,'sha256').hexdigest()==row['digest']
+            if not valid:raise ValueError('The earlier output cannot be verified. The existing file was kept.')
+            return saved,details,Path(row['root'])
+        if row['stage']=='published':raise _HeldSource('The previously saved file is no longer present. Automatic retries remain stopped.')
+    if arrival['recovery']:raise ValueError('The final YouTube attempt was interrupted before publication.')
+    return None
 
 
 def _finish(store, key, state, message):
@@ -345,7 +451,7 @@ def _extract_youtube(store, url: str, mode: str) -> dict:
     temporary = None
     try:
         from .cookies import allow_downloads
-        if (mode != 'video' or allow_downloads(store)) and cookie.is_file():
+        if (mode != 'video' or allow_downloads(store) and read(store,'youtube')['authenticated_retry']) and cookie.is_file():
             temporary = tempfile.NamedTemporaryFile(prefix='youtube-cookies-', dir=store.directory, delete=False)
             temporary.write(cookie.read_bytes())
             temporary.close()
@@ -374,6 +480,9 @@ def _extract_youtube(store, url: str, mode: str) -> dict:
     finally:
         if temporary is not None:
             os.unlink(temporary.name)
+    if result.returncode and mode=='video':
+        from .downloads import failed_download
+        failed_download(store,[(bool(request.get('cookie')),str(result.stderr or b'',encoding='utf-8',errors='replace')[-32768:])])
     if result.returncode or len(result.stdout) > 8_000_000:
         raise ValueError('Could not read this YouTube video. Check that it is available, then try again.')
     try:
@@ -387,6 +496,8 @@ def _extract_youtube(store, url: str, mode: str) -> dict:
 
 def _probe_youtube(store, video_id: str) -> dict:
     data = _extract_youtube(store, 'https://www.youtube.com/watch?v=' + video_id, 'video')
+    if data.get('id')!=video_id:
+        raise ValueError('YouTube metadata did not match the requested video. Nothing was published.')
     if not data.get('title') or not re.fullmatch(r'\d{8}', str(data.get('upload_date') or '')):
         raise ValueError('Could not read this YouTube video. Check that it is available, then try again.')
     data['title'] = str(data['title'])[:180]
@@ -542,14 +653,26 @@ def _write_youtube_sidecars(store, media: Path, video_path: Path, video_id: str,
 @youtube_traffic
 def _save_youtube(app, store, video_id: str, stop, task) -> None:
     from .activity import record
-    from .downloads import QUALITIES, command
+    from .downloads import QUALITIES, command, failed_download
     from .storage_layout import path as media_path
+    _youtube_checkpoint(store,video_id,stop)
+    media = Path(media_path(store, 'youtube', app.config['MEDIA_DIR'])).resolve()
+    media.mkdir(parents=True, exist_ok=True)
+    receipt=_youtube_receipt(store,media,expected_id=video_id)
+    _youtube_checkpoint(store,video_id,stop)
+    if receipt:
+        saved,details,original_root=receipt
+        _youtube_checkpoint(store,video_id,stop)
+        note=write_youtube_sidecars(store,original_root,saved,video_id,details)
+        _youtube_checkpoint(store,video_id,stop)
+        record(store,task,details.get('title') or 'YouTube video','complete',note or 'Saved in the YouTube folder.',100)
+        return
     info = _probe_youtube(store, video_id)
+    if info.get('id')!=video_id:
+        raise ValueError('YouTube metadata did not match the requested video. Nothing was published.')
     channel = _channel_images(store, str(info['channel_id'])) if info.get('channel_id') else {}
     title = info['title'] or 'YouTube video'
     record(store, task, title, 'running', 'Downloading from YouTube.', 0, youtube_card(store, info, channel))
-    media = Path(media_path(store, 'youtube', app.config['MEDIA_DIR']))
-    media.mkdir(parents=True, exist_ok=True)
     target = _youtube_target(store, media, info)
     if target.exists():
         raise ValueError('A file already exists for this YouTube video; it was kept.')
@@ -567,43 +690,67 @@ def _save_youtube(app, store, video_id: str, stop, task) -> None:
             snapshot.write_bytes(cookie.read_bytes())
             os.chmod(snapshot, 0o600)
         args = command(video_id, quality, folder, snapshot)
-        process = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=subprocess_env('youtube'))
-        last = 0.0
+        _youtube_checkpoint(store,video_id,stop)
+        log_path=folder/'progress.log'
+        log=log_path.open('w+',encoding='utf-8')
+        try:
+            process = subprocess.Popen(args, stdout=log, stderr=subprocess.STDOUT, text=True, env=subprocess_env('youtube'))
+        except BaseException:
+            log.close()
+            raise
+        last = 0.0;diagnostics='';position=0;pending=''
         try:
             while True:
-                if stop.is_set():
-                    process.terminate()
-                    raise ValueError('Auto download stopped.')
-                line = process.stdout.readline() if process.stdout is not None else ''
+                _youtube_checkpoint(store,video_id,stop)
+                if '\n' not in pending:
+                    with log_path.open(encoding='utf-8',errors='replace') as reader:
+                        reader.seek(position);pending+=reader.read(65536);position=reader.tell()
+                line,pending=pending.split('\n',1) if '\n' in pending else ('',pending[-65536:])
                 if not line:
                     if process.poll() is not None:
                         break
+                    stop.wait(0.5)
                     continue
-                if line.startswith('download:ReelDock:') and time.monotonic() - last >= 2:
-                    parts = line.strip().split(':')
-                    done = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
-                    total = int(parts[3]) if len(parts) > 3 and parts[3].isdigit() else 0
-                    record(store, task, title, 'running', 'Downloading from YouTube.', min(99, done / total * 100) if total else None)
+                diagnostics=(diagnostics+line+'\n')[-65536:]
+                if line.removeprefix('download:').startswith('ReelDock:') and time.monotonic() - last >= 2:
+                    parts = line.removeprefix('download:').strip().split(':')
+                    done = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                    total = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+                    arrival=_youtube_arrival.get();prefix=''
+                    if arrival:
+                        with store.connect() as db:count=db.execute('SELECT attempt_count FROM youtube_drop_retries WHERE key=?',(arrival['key'],)).fetchone()[0]
+                        if count>1:prefix=f'Automatic retry {count-1} of 5. '
+                    record(store, task, title, 'running', prefix+'Downloading from YouTube.', min(99, done / total * 100) if total else None)
                     last = time.monotonic()
             code = process.wait(timeout=20)
+            with log_path.open(encoding='utf-8',errors='replace') as reader:
+                reader.seek(max(0,log_path.stat().st_size-65536));diagnostics=reader.read(65536)
         finally:
             if process.poll() is None:
                 process.kill()
                 process.wait(timeout=10)
+            log.close()
         if code:
-            raise ValueError('YouTube download failed. Check that the video is available, then try again.')
+            failed_download(store,[(bool(snapshot),diagnostics)])
         output = folder / 'video.mp4'
         if not output.is_file() or output.stat().st_size == 0:
             raise ValueError('No playable video was produced.')
-        try:
-            os.link(output, target)
-        except FileExistsError:
-            raise ValueError('A file already exists for this YouTube video; it was kept.')
-        except OSError:
-            os.replace(output, target)
-        else:
-            output.unlink()
+        _youtube_receipt(store,media,info,output,target,expected_id=video_id)
+        with store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            _youtube_checkpoint(store,video_id,stop,heartbeat=False)
+            try:
+                os.link(output, target)
+            except FileExistsError:
+                raise ValueError('A file already exists for this YouTube video; it was kept.')
+            except OSError:
+                os.replace(output, target)
+            else:
+                output.unlink()
+            arrival=_youtube_arrival.get()
+            if arrival:db.execute("UPDATE youtube_drop_retries SET stage='published' WHERE key=?",(arrival['key'],))
     note = write_youtube_sidecars(store, media, target, video_id, info, channel)
+    _youtube_checkpoint(store,video_id,stop)
     record(store, task, title, 'complete', note or 'Saved in the YouTube folder.', 100)
 
 
@@ -612,7 +759,8 @@ def start_youtube(app, store, video_id: str, source_name: str, stop) -> None:
     import json
     from .activity import record
     from .downloads import QUALITIES, enqueue
-    task = 'auto-youtube-' + video_id
+    arrival=_youtube_arrival.get()
+    task = 'auto-'+arrival['key'][:20] if arrival else 'auto-youtube-' + video_id
     from .media_holds import blocked
     if blocked(store,['video:'+video_id,'managed:video:'+video_id]):
         raise _HeldSource('This video was cleared. Start or resume this video explicitly to download it again.')
@@ -622,7 +770,11 @@ def start_youtube(app, store, video_id: str, source_name: str, stop) -> None:
         video = json.loads(row['data'])
         if video.get('state') == 'published':
             quality = store.get('download_quality', '1080')
-            enqueue(store, {**video, 'id': video_id}, quality if quality in QUALITIES else '1080')
+            with store.connect() as db:previous=db.execute('SELECT attempt_count,state FROM downloads WHERE id=?',(video_id,)).fetchone()
+            from .downloads import MAX_ATTEMPTS
+            if previous and previous['attempt_count']>=MAX_ATTEMPTS and previous['state']=='failed':
+                raise _HeldSource('Five automatic retries have been used. Select Retry on the existing YouTube download to start again.')
+            enqueue(store, {**video, 'id': video_id}, quality if quality in QUALITIES else '1080',quality_inherited=True)
             record(store, task, video.get('title') or source_name, 'complete', 'Queued with your other downloads.')
             return
     record(store, task, source_name, 'running', 'Downloading from YouTube.', 0)
@@ -694,8 +846,15 @@ def _handle(app, store, folder, path: Path, kind, key, stop, torrent, fetch, you
             _save_stream(store, path.name, url, fetch, stop)
             task(store, 'auto-' + key[:20], path.name, 'complete', 'Saved with the usual movie or episode name.', 100)
             note = 'A .strm file from the auto-download folder was saved.'
-        _accept(folder, path)
-        _finish(store, key, 'done', 'Downloaded.')
+        if video:
+            with store.connect() as db:
+                db.execute('BEGIN IMMEDIATE')
+                _youtube_checkpoint(store,video,stop,heartbeat=False)
+                _accept(folder,path)
+                db.execute("UPDATE auto_downloads SET state='done',message='Downloaded.',updated=? WHERE key=?",(time.time(),key))
+        else:
+            _accept(folder, path)
+            _finish(store, key, 'done', 'Downloaded.')
         record(store, 'Stream download finished', note, 'Downloads')
         return
     data = _read_file(path, LIMITS['.torrent'])
@@ -747,19 +906,35 @@ def scan(app, store, stop, kinds, torrent=None, fetch=None, youtube=None, nzb=No
         if paused(store, _source_engine(path, kind)):
             continue
         key = _key(path.name, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino)
-        if not _claim(store, key, path.name, kind):
+        engine=_source_engine(path,kind)
+        from .vpn import downloads_blocked
+        if engine=='youtube' and downloads_blocked('youtube'):continue
+        claimed=_claim(store,key,path.name,kind,engine)
+        if not claimed:
             continue
+        token=_youtube_arrival.set({'key':key,'recovery':claimed=='recover'} if engine=='youtube' else None)
         try:
             _handle(app, store, folder, path, kind, key, stop, torrent, fetch, youtube, nzb)
         except _HeldSource as exc:
             # Keep the arrival and durable hold; ordinary scans never release it.
             _finish(store,key,'held',str(exc))
+            if engine=='youtube':
+                from .activity import record as task
+                task(store,'auto-'+key[:20],path.name,'cancelled',str(exc))
         except Exception as exc:
+            from .downloads import DownloadPaused
+            if engine=='youtube':
+                state,message=_youtube_failure(store,key,exc,paused=isinstance(exc,DownloadPaused))
+                from .activity import record as task
+                task(store,'auto-'+key[:20],path.name,state,message)
+                continue
             logging.exception('Auto download failed')
             message = str(exc) if isinstance(exc, ValueError) else 'Auto download failed. The file was left in the folder.'
             _finish(store, key, 'failed', message)
             from .activity import record as task
             task(store, 'auto-' + key[:20], path.name, 'failed', message)
+        finally:
+            _youtube_arrival.reset(token)
 
 
 def loop(app, store, stop, kinds):

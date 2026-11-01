@@ -31,7 +31,7 @@ from ..torrent.rename import category_for, companion_path, library_path, parse_s
 from . import archive, indexers, nzbxml, yenc
 from .files import classify, is_archive, is_recovery
 from .finish import prepare, unwrap_manifest
-from .nntp import NntpClient, NntpError
+from .nntp import NntpClient, NntpError, NntpAuthenticationError, NntpConnectionBusy
 from .par2 import Par2Error, repair
 
 
@@ -1331,7 +1331,8 @@ class NzbEngine(DownloadEngine):
                     with state.lock:
                         state.hits += 1
                 except (NntpError, yenc.YencError, OSError) as exc:
-                    if isinstance(exc, NntpError) and (exc.code in {481, 482, 502} or "rejected" in str(exc).lower()):
+                    if isinstance(exc, NntpError) and (isinstance(exc, (NntpAuthenticationError, NntpConnectionBusy))
+                            or exc.code in {481, 482, 502} or "rejected" in str(exc).lower()):
                         job.fetch_error = str(exc)
                         return
                     if isinstance(exc, NntpError) and exc.code in {420, 423, 430}:

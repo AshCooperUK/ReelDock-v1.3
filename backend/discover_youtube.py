@@ -163,7 +163,7 @@ def claim_path(store, media, video_id, title, suffix='.mkv'):
 
 @youtube
 def run(store, media, job, stop):
-    from .downloads import command, run_process
+    from .downloads import command, run_process, failed_download, YouTubeFailure, provider_retry_at
     from .channel_downloads import preferences
     allow_lower = quality_policy(store, job['id'])
     if allow_lower is None:
@@ -183,7 +183,9 @@ def run(store, media, job, stop):
         folder = Path(directory)
         cookie = store.directory / 'youtube-cookies.txt'
         from .cookies import allow_downloads
-        snapshot = folder / 'cookies.txt' if allow_downloads(store) and cookie.is_file() else None
+        from .download_options import for_channel
+        options=for_channel(store,video.get('channel',''),'youtube')
+        snapshot = folder / 'cookies.txt' if allow_downloads(store) and options['authenticated_retry'] and cookie.is_file() else None
         if snapshot:
             snapshot.write_bytes(cookie.read_bytes())
             os.chmod(snapshot, 0o600)
@@ -192,11 +194,10 @@ def run(store, media, job, stop):
         code, output = run_process(store, job, stop, args, folder / 'progress.log', root)
         produced = next((path for path in folder.glob('video.*') if path.suffix in ('.mkv', '.mp4', '.webm') and path.stat().st_size), None)
         if code or not produced:
-            detail = redact(output)
-            quality_missing = 'requested format is not available' in detail.lower()
+            quality_missing = 'requested format is not available' in output.lower()
             if not allow_lower and quality_missing:
-                raise ValueError('The requested quality is not available, and a lower quality was not allowed.')
-            raise ValueError(detail or 'No completed media file was produced.')
+                raise YouTubeFailure('The requested quality is not available, and a lower quality was not allowed.',provider_retry_at(output))
+            failed_download(store,[(bool(snapshot),output)])
         info = json.loads((folder / 'video.info.json').read_text())
         from .discover_publication import request_for_video, publish
         request=request_for_video(store,job['id'])

@@ -12,7 +12,13 @@ export function filterMediaCards(cards:MediaCard[],source='all',kind='all') {
   return cards.filter(card=>{
     if(kind!=='all'&&mediaKind(card)!==kind)return false;
     if(source==='all')return true;
-    const fallback=card.action.type==='discover'?'NZB':card.action.type==='vod'?'VOD':card.action.type==='youtube'?'YouTube':'Local Library';
+    const fallback=card.action.type==='discover'?'NZB':['vod','vod-group'].includes(card.action.type)?'VOD':card.action.type==='youtube'?'YouTube':'Local Library';
     return [...(card.origins||[]),card.origin||fallback].some(value=>name(value)===origin);
   });
+}
+
+/** Only a known TV-metadata warning can be narrowed; genuine source errors stay. */
+export function filterMediaWarnings(messages:string[]=[],source='all',kind='all') {
+  return messages.filter(message=>!(/^(NZB TV metadata:|Some TV metadata could not be checked\.)/.test(message))||
+    (['all','discover','nzb'].includes(source.toLowerCase())&&['all','shows'].includes(kind)));
 }

@@ -222,8 +222,9 @@ class CookiePermissionTests(unittest.TestCase):
 
     def test_discover_runner_gate(self):
         self.cookie()
-        for allowed, expected in (('true', True), ('false', False)):
+        for allowed,retry,expected in (('true',True,True),('false',True,False),('true',False,False)):
             self.store.set('youtube_cookie_downloads', allowed)
+            self.store.set('download_authenticated_retry','true' if retry else 'false')
             seen = []
 
             def process(store, job, stop, args, log, root):
@@ -255,9 +256,10 @@ class CookiePermissionTests(unittest.TestCase):
     def test_extract_youtube_video_gate_and_channel_unchanged(self):
         self.cookie()
         video = 'https://www.youtube.com/watch?v=abcdefghijk'
-        for mode, url, allowed, expected in (('video', video, 'true', True), ('video', video, 'false', False),
-                                             ('channel', 'https://www.youtube.com/@Some', 'false', True)):
+        for mode,url,allowed,retry,expected in (('video',video,'true',True,True),('video',video,'false',True,False),
+                                               ('video',video,'true',False,False),('channel','https://www.youtube.com/@Some','false',False,True)):
             self.store.set('youtube_cookie_downloads', allowed)
+            self.store.set('download_authenticated_retry','true' if retry else 'false')
             seen = []
 
             def run(args, input=b'', **kwargs):

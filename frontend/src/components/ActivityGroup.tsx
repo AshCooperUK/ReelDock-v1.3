@@ -2,7 +2,7 @@ import { Badge, Box, Divider, Group, Paper, Text, UnstyledButton } from '@mantin
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useId, useState, type ReactNode } from 'react';
 
-export type ActivityGroupId = 'in-progress' | 'waiting' | 'attention' | 'completed';
+export type ActivityGroupId = 'in-progress' | 'waiting' | 'attention' | 'completed' | 'library-optimisation';
 
 export default function ActivityGroup({ id, title, count, actions, children }: {
     id: ActivityGroupId;

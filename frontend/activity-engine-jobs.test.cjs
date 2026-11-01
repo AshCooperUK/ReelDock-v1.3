@@ -31,6 +31,7 @@ function render(feed, torrents, nzbs, phone=false, interaction) {
     './components/ActivityGroup':activityGroup,'./components/ActivityStatus':activityStatus,'./activityClear':require('./activity-clear-test-helper.cjs')(),'./warmSnapshots':warmSnapshots,
     './components/SelectField':{SelectField:props=>{if(interaction)interaction.select=props;normalizedChoices=Array.from(sharedSelect.normalizeSelectData(props)).flatMap(row=>row.items||[row]);return h(sharedSelect.SelectField,props);}},
     '@mantine/hooks':{useMediaQuery:()=>phone},
+    './LibraryOptimiseJobs': { LibraryOptimiseActivity: () => h('section', {'data-optimisation-fixture': true}, '99 separate optimisation jobs') },
     './DownloadHistory': { useDownloadHistory: () => feed },
     './TorrentDownloads': { useTorrentActivity: () => torrents },
     './NzbDownloads': { useNzbActivity: () => nzbs },
@@ -59,6 +60,7 @@ assert.equal(tab(html, 'Failed'), 2, 'old failed torrent + NZB jobs count immedi
 assert.equal(tab(html, 'Completed'), 15 + 2, 'old finished NZB jobs count beside the paged history');
 assert.equal(tab(html, 'Downloading'), 1); assert.equal(tab(html, 'Queued'), 1);
 assert.equal(tab(html, 'All'), 15 + 6);
+assert.ok(html.indexOf('aria-label="Activity summary"')<html.indexOf('aria-label="Activity status"'));assert.ok(html.indexOf('aria-label="Activity status"')<html.indexOf('data-optimisation-fixture'));assert.ok(html.indexOf('data-optimisation-fixture')<html.indexOf('aria-label="Completed activity"'),'optimisation appears after summary/toolbar and before Completed');assert.ok(html.includes('99 separate optimisation jobs'));assert.equal(tab(html,'All'),21,'optimisation jobs never enter download counts');
 for(const section of ['In progress','Waiting','Needs attention','Completed'])assert.ok(html.includes('aria-label="'+section+' activity"'),section+' group remains reachable in the queue');assert.ok(html.includes('aria-label="Activity summary"'));
 assert.ok(html.includes('Change metadata'), 'Change metadata is reachable without paging unrelated history');
 for (const id of ['nzbn1', 'nzbn2', 'nzbn3', 'nzbn4', 'torrentt1', 'torrentt2']) assert.equal(html.split('data-job="' + id + '"').length, 2, id + ' appears exactly once');

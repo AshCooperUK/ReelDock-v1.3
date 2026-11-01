@@ -30,5 +30,7 @@ if __name__=='__main__':
     from .vpn.transport import install as install_vpn_transport
     install_vpn_transport()
     import yt_dlp
+    from .youtube_download import install_retry_after
+    install_retry_after()
     install()
     yt_dlp.main()

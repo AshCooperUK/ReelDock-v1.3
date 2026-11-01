@@ -98,3 +98,64 @@ Attribution and software credits
 Keep the bundled provider artwork attribution text in backend/static.
 The frontend build collects dependency licences into third-party-notices.json.
 The app's software credits link to the complete installed dependency notices.
+
+Source changes after 1.3.10 — 2026-11-01
+----------------------------------------
+These changes are in the source branch. The published 1.3.10 image and release
+assets are unchanged until a separate image release is published. Build the
+source checkout to use these changes with Docker.
+
+- Discover keeps imported VOD catalogues available when automatic refresh is
+  paused, groups movie editions and TV episodes without losing exact download
+  choices, and orders release dates using known years when exact dates are absent.
+- Completed local downloads can retain metadata from their exact Discover
+  request, including artwork and the matched movie year.
+- YouTube downloads retain the exact selected video and use up to five automatic
+  retries after the first attempt, while respecting cancellation, holds and
+  current connection settings. Failure messages distinguish common causes.
+- NZB connection failures distinguish authentication refusal from a provider's
+  connection limit.
+- Library optimisation creates checked HEVC or H264 copies, with optional AAC
+  stereo audio and a 1080p limit that never enlarges smaller videos. Originals
+  are retained. Files and folders show sizes and support name/size sorting.
+- Optimisation jobs show progress and a separate collapsible Activity section.
+  Validated copies can be saved beside originals using a clean title plus the
+  selected profile, for example Movie Title (2020) HEVC.mkv. Existing files are
+  never overwritten; unsupported/HDR sources are kept unchanged and copies must pass
+  validation and save at least 5%.
+- Guide Agenda honours Latest upload for both day groups and videos, with known
+  uploads before forecasts and date-only entries. Favourites stay within their
+  day/status group; filters and pagination retain the same video identities.
+
+Optional existing-library mounts for source builds
+-------------------------------------------------
+Library optimisation is disabled by default. Set these variables in your local
+.env before adding compose.library-optimise.yaml to your source Compose command:
+   REELDOCK_EXISTING_TV_PATH=/absolute/path/to/TV Shows
+   REELDOCK_EXISTING_MOVIE_PATH=/absolute/path/to/Movies
+   REELDOCK_LIBRARY_WRITE_GID=1000
+Replace these examples with existing directories and the group that already has
+write access. The overlay refuses to create a missing host directory. It maps
+read-only input views and separate writable views for checked copies. Review
+permissions for the selected libraries; it does not change host ownership.
+
+After building the source image, start it with:
+   docker compose -f compose.yaml -f compose.library-optimise.yaml up -d --no-build
+Select a file in Settings > Library optimisation and enable optimisation only
+when ready. Encoding uses the CPU and can take hours. Check picture/audio
+quality on your devices. Keeping the originals means new copies need additional
+free disk space; it does not automatically reclaim the original space.
+
+Change validation
+-----------------
+Regression tests cover VOD availability/grouping/order, exact saved metadata,
+YouTube retries, NZB failure classification, optimisation validation/publication,
+progress/listing/Activity controls and Guide Agenda ordering. The affected UI
+flows were also checked in isolated browser fixtures at desktop, tablet and
+320px phone widths. Test fixtures contain no private accounts or media.
+Operational journals and deployment evidence remain private and are excluded
+from this repository.
+
+Pending: optional metadata-enrichment warnings in search are still shown.
+A later change will reserve the attention banner for actual source/search
+failures; this source push does not claim that behaviour has changed.

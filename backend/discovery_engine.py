@@ -24,7 +24,7 @@ _RETRY={}
 def default_browse_args(media='movies'):
     return dict(media=media,q='',sort='release',offset=0,collection='trending',category='all',cursor=None)
 
-def browse_cache_key(args,store,indexers=None):
+def browse_cache_key(args,store,indexers=None,*,catalogue_identity=False):
     if indexers is None:
         try:indexers=sources.indexers_for(None,store)
         except ValueError:indexers=[]
@@ -32,8 +32,15 @@ def browse_cache_key(args,store,indexers=None):
     if args.get('global'):
         with store.connect() as db:
             accounts.append([tuple(row) for row in db.execute("SELECT id,coalesce(json_extract(options,'$.enabled'),1) FROM m3u_sources ORDER BY id")])
+            # Removal can begin while refresh is already paused. Invalidate old
+            # immutable result frames without treating a pause as lost access.
+            removing=[row[0] for row in db.execute('SELECT source FROM m3u_removals ORDER BY source')]
+            if removing and not catalogue_identity:accounts.append(dict(removing=removing))
     account=hashlib.sha256(json.dumps(accounts,sort_keys=True).encode()).hexdigest()
-    prefix='engine:global-search:v5:' if args.get('global') else 'engine:nzb-browse:v11:' if args.get('collection') not in ('',None,'all') else 'engine:nzb-browse:v7:'
+    # Persisted catalogue observations retain their established account identity;
+    # a new transient result policy must not hide unchanged-account saved data.
+    global_prefix='engine:global-search:v5:' if catalogue_identity else 'engine:global-search:v6:'
+    prefix=global_prefix if args.get('global') else 'engine:nzb-browse:v11:' if args.get('collection') not in ('',None,'all') else 'engine:nzb-browse:v7:'
     return prefix+account+':'+json.dumps(dict(args,sort='source'),sort_keys=True,separators=(',',':'))
 
 def warm_first_pages(app,store):

@@ -138,6 +138,7 @@ def picker(store, query, offset):
 def vod_title(store, source, path, *, refresh=True):
     """Resolve a stored VOD title by authoritative IDs, without fetching its stream."""
     from .view_media.providers import TMDB, image, initialise as initialise_cache
+    from .m3u_availability import AVAILABLE_SQL
     if refresh:initialise_cache(store)
     with store.connect() as db:
         row=db.execute('''SELECT c.key,f.title,f.kind,t.info,t.data,t.year FROM m3u_files f
@@ -145,7 +146,7 @@ def vod_title(store, source, path, *, refresh=True):
             JOIN m3u_catalog_titles t ON t.key=c.key JOIN m3u_sources s ON s.id=f.source
             WHERE f.source=? AND f.path=? AND f.kind IN ('movies','series','tv')
             AND lower(f.path) NOT LIKE '%sample%'
-            AND coalesce(json_extract(s.options,'$.enabled'),1)=1''',(source,path)).fetchone()
+            AND '''+AVAILABLE_SQL,(source,path)).fetchone()
     if not row:raise ValueError('This VOD title is not catalogued yet. Sync its metadata first.')
     data=json.loads(row['data'] or '{}');info=json.loads(row['info'] or '{}')
     kind='movie' if row['kind']=='movies' else 'show';provider='imdb' if kind=='movie' else 'tvdb'

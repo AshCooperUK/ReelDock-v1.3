@@ -13,12 +13,13 @@ const VodSettings = lazy(() => import('./settings/m3u/VodSettings'));
 const DownloadControls = lazy(() => import('./settings/DownloadControls'));
 const MetadataSettings = lazy(() => import('./settings/MetadataSettings'));
 const MediaSettings = lazy(() => import('./MediaSettings'));
+const LibraryOptimiseSettings = lazy(() => import('./LibraryOptimiseSettings'));
 const AutoDownloadSettings = lazy(() => import('./settings/auto-download/AutoDownloadSettings'));
 const TorrentSettings = lazy(() => import('./settings/torrent/TorrentSettings'));
 const NzbSettings = lazy(() => import('./settings/nzb/NzbSettings'));
 const VpnSettings = lazy(() => import('./settings/VpnSettings'));
 const SettingsAppearance = lazy(() => import('./settings/SettingsAppearance'));
-const sections = [['General',SlidersHorizontal],['YouTube',Youtube],['VOD Settings',ListVideo],['NZB Settings',FileDown],['Torrent Settings',CloudDownload],['Auto-Download',FolderOpen],['Metadata',Tags],['VPN',ShieldCheck],['Media Players',Monitor],['Appearance',LayoutGrid],['Account & security',ShieldCheck]] as const;
+const sections = [['General',SlidersHorizontal],['YouTube',Youtube],['VOD Settings',ListVideo],['NZB Settings',FileDown],['Torrent Settings',CloudDownload],['Auto-Download',FolderOpen],['Library optimisation',FolderOpen],['Metadata',Tags],['VPN',ShieldCheck],['Media Players',Monitor],['Appearance',LayoutGrid],['Account & security',ShieldCheck]] as const;
 const labels:Record<string,string>={'VOD Settings':'VOD connections','NZB Settings':'Usenet & NZB','Torrent Settings':'Torrents','Auto-Download':'Watched folders','Media Players':'Media servers'};
 const labelFor=(name:string)=>labels[name]||name;
 export function canonicalSettingsSection(initial:string) {return ['M3U Settings','Xtream'].includes(initial)?'VOD Settings':initial==='Media apps'?'Media Players':['Downloads','Folders'].includes(initial)?'General':sections.some(([name])=>name===initial)?initial:'General';}
@@ -41,6 +42,7 @@ export default function LiveSettings({open,onClose,initial='General',csrf,appInf
         {section==='NZB Settings'&&<NzbSettings csrf={csrf}/>}
         {section==='Torrent Settings'&&<TorrentSettings csrf={csrf}/>}
         {section==='Auto-Download'&&<AutoDownloadSettings csrf={csrf}/>}
+        {section==='Library optimisation'&&<LibraryOptimiseSettings csrf={csrf}/>}
         {section==='Metadata'&&<MetadataSettings csrf={csrf}/>}
         {section==='VPN'&&<VpnSettings csrf={csrf}/>}
         {section==='Media Players'&&<MediaSettings csrf={csrf}/>}

@@ -160,6 +160,9 @@ def main():
         from .view_media.saved_catalogue import loop as saved_catalogue_loop
         saved_catalogue=threading.Thread(target=saved_catalogue_loop,args=(app,importer.store,stop),daemon=True,name='saved-media-catalogue')
         saved_catalogue.start()
+        from .library_optimise import loop as library_optimise_loop
+        library_optimise=threading.Thread(target=library_optimise_loop,args=(app,importer.store,stop),daemon=True,name='library-optimise')
+        library_optimise.start()
         try:
             while True:
                 run_tick(importer)
@@ -183,6 +186,7 @@ def main():
             auto_downloads.join(timeout=10)
             discover.join(timeout=15)
             saved_catalogue.join(timeout=10)
+            library_optimise.join(timeout=10)
 
 
 if __name__ == '__main__':

@@ -1132,6 +1132,8 @@ def create_app(config=None):
     register_nzb(app, store, guide_access)
     from .media_players import register as register_media_players
     register_media_players(app, store, guide_access, csrf)
+    from .library_optimise import register as register_library_optimise
+    register_library_optimise(app, store, guide_access, csrf)
     from .discover import register as register_discover
     register_discover(app, store, guide_access, csrf)
     from .source_alternatives import register as register_source_alternatives
@@ -1755,11 +1757,12 @@ def create_app(config=None):
                     return error(refused,409)
                 try:
                     with store.connect() as db:
-                        previous=db.execute('SELECT quality FROM downloads WHERE id=?',(video_id,)).fetchone() if action=='retry' else None
-                    quality=previous['quality'] if previous else body.get('quality',channel_downloads.preferences(store,video['channel'])['quality'])
+                        previous=db.execute('SELECT quality,automatic,quality_inherited FROM downloads WHERE id=?',(video_id,)).fetchone() if action=='retry' else None
+                    inherited=bool(previous['quality_inherited']) if previous else 'quality' not in body
+                    quality=previous['quality'] if previous and not inherited else body.get('quality',channel_downloads.preferences(store,video['channel'])['quality'])
                     from .media_holds import resume
                     resume(store,['video:'+video_id,'managed:video:'+video_id])
-                    downloads.enqueue(store, video, quality)
+                    downloads.enqueue(store, video, quality,automatic=bool(previous['automatic']) if previous else False,quality_inherited=inherited,restart=action=='retry')
                 except ValueError as exc:
                     return error(str(exc))
             elif action == 'stop_all':

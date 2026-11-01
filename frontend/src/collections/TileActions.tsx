@@ -21,6 +21,7 @@ export function mediaTileTarget(card:MediaCard):{item?:CollectionItem;resolve?:R
   return {item:{...existing,id:existing?.id||'youtube:channel:'+channelId,kind:'channel',channelId,title:card.title,image:card.image||existing?.image,backdrop:card.backdrop||existing?.backdrop,description:card.description||existing?.description}};
  }
  if(card.action.type==='discover')return {item:card.action.item};
+ if(card.action.type==='vod-group')return card.action.target===null?{label:card.title}:{item:card.action.target||card.action.item};
  if(card.action.type==='vod')return {resolve:{source:card.action.source,path:card.action.item.path},label:card.title};
  if(card.action.type==='local')return {resolve:{local:card.action.id},label:card.title,episode:['show','shows'].includes(card.kind)&&typeof card.season==='number'&&typeof card.number==='number'};
  if(card.action.type==='local-group')return {};

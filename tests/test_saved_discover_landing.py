@@ -68,8 +68,14 @@ class SavedDiscoverLandingTests(unittest.TestCase):
         self.assertNotEqual(self.app.test_client().get('/api/view-media?source=all',base_url=vm.ORIGIN).status_code,200)
 
     def test_saved_cards_paginate_all_origins_and_preserve_actions_without_provider_calls(self):
-        sig=self.index();cards=[self.card(n) for n in range(1,30)]
-        cards += [self.card(30,'show','VOD'),self.card(31,'movie','Local Library'),self.card(32,'video','YouTube')]
+        cards=[self.card(n) for n in range(1,30)]
+        cards += [self.card(31,'movie','Local Library'),self.card(32,'video','YouTube')]
+        # Current playlist rows contribute one grouped series even when no
+        # background catalogue worker has run; stale per-file observations do not.
+        with self.store.connect() as db:
+            db.execute("INSERT INTO m3u_sources(id,name,url,options,folder) VALUES('vod','Fixture playlist','https://private.test/source','{}','vod')")
+            db.execute("INSERT INTO m3u_files VALUES('vod','Fixture/S01E01.strm','Fixture S01E01','series','','hash')")
+        sig=self.index()
         for origin in ('NZB','VOD','Local Library','YouTube'):
             saved.remember(self.store,sig,origin,[item for item in cards if item['origin']==origin])
         with patch.object(engine,'schedule') as schedule,patch.object(adapters,'discover') as providers:
@@ -80,7 +86,7 @@ class SavedDiscoverLandingTests(unittest.TestCase):
             result=first['items']+second['items']
             self.assertEqual(len(result),32);self.assertEqual(len({row['id'] for row in result}),32)
             self.assertEqual({row['origin'] for row in result},{'NZB','VOD','Local Library','YouTube'})
-            self.assertEqual({row['action']['type'] for row in result},{'discover','vod','local','youtube'})
+            self.assertEqual({row['action']['type'] for row in result},{'discover','vod-group','local','youtube'})
             self.assertFalse(first['windowLimited']);self.assertIn('No provider requests',first['freshness']['scope'])
             self.assertEqual([item['kind'] for item in self.get('/api/view-media?source=all&media=youtube').json['items']],['video'])
             schedule.assert_not_called();providers.assert_not_called()
@@ -156,11 +162,14 @@ class SavedDiscoverLandingTests(unittest.TestCase):
             result=self.get('/api/view-media?source=all').json
         origins={row['origin']:row for row in result['items']};self.assertEqual(set(origins),{'VOD','YouTube','Local Library'})
         self.assertEqual(origins['YouTube']['action'],dict(type='youtube',id=identity));self.assertEqual(origins['YouTube']['durationSeconds'],45)
-        self.assertEqual(origins['VOD']['action']['source'],'vod');self.assertEqual(origins['VOD']['action']['item']['path'],'movie.strm');self.assertEqual(origins['VOD']['durationSeconds'],3600)
+        self.assertEqual(origins['VOD']['action']['type'],'vod-group');self.assertEqual(origins['VOD']['_entry']['source'],'vod');self.assertEqual(origins['VOD']['_entry']['path'],'movie.strm');self.assertEqual(origins['VOD']['durationSeconds'],3600)
         local=origins['Local Library'];self.assertEqual(local['runtimeMinutes'],91);self.assertEqual(local['action']['type'],'local')
         self.assertEqual(adapters.local._CACHE[str(self.root)]['files'][local['action']['id']]['path'],video)
         self.assertEqual(self.dump(),before)
         with self.store.connect() as db:db.execute("UPDATE m3u_sources SET options='{\"enabled\":false}' WHERE id='vod'")
+        self.assertTrue(any(row['origin']=='VOD' for row in self.get('/api/view-media?source=all').json['items']),'pausing automatic refresh keeps imported files available')
+        from backend import m3u_removal
+        with self.store.connect() as db:m3u_removal.queue(db,'vod')
         self.assertFalse(any(row['origin']=='VOD' for row in self.get('/api/view-media?source=all').json['items']))
 
     def test_known_completed_local_paths_reject_links_and_outside_mount(self):

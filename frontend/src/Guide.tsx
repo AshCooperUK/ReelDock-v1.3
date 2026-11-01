@@ -83,7 +83,27 @@ export default function Guide({ favouritesOnTop, onFavouritesOnTop, live }: { fa
   const [display,setDisplay]=useState('agenda');
   const scrollRef=useRef<HTMLDivElement|null>(null),sentinelRef=useRef<HTMLDivElement|null>(null);
   const matches = (p: Programme) => filter === 'All videos' || (filter === 'Uploaded' && p.status === 'Uploaded') || (filter === 'Upcoming' && (['Scheduled', 'Expected'].includes(p.status)||(!!p.allDay&&(p.date||'')>=live.today))) || (filter === 'Live now' && p.status === 'Live now');
-  const allAgenda=visibleChannels.flatMap(channel=>channel.programmes.filter(p=>days.includes(p.date||live.date)&&matches(p)).map(programme=>({channel,programme}))).sort((a,b)=>days.indexOf(a.programme.date||live.date)-days.indexOf(b.programme.date||live.date)||a.programme.start-b.programme.start);
+  const channelOrder=new Map(visibleChannels.map((channel,index)=>[channel,index]));
+  const latestRank=(p:Programme)=>p.allDay||!Number.isFinite(p.start)?2:p.status==='Uploaded'||p.status==='Live now'?0:1;
+  const agendaEntries=visibleChannels.flatMap(channel=>channel.programmes.filter(p=>days.includes(p.date||live.date)&&matches(p)).map(programme=>({channel,programme})));
+  const actualDays=new Set(agendaEntries.filter(entry=>latestRank(entry.programme)===0).map(entry=>entry.programme.date||live.date));
+  const compareDays=(a:string,b:string)=>{
+    const day=days.indexOf(a)-days.indexOf(b);
+    return sort==='latest'?(Number(actualDays.has(b))-Number(actualDays.has(a)))||-day:day;
+  };
+  const allAgenda=agendaEntries.sort((a,b)=>{
+    const day=compareDays(a.programme.date||live.date,b.programme.date||live.date);
+    if(day)return day;
+    // Latest means actual uploads/live entries before forecasts, then date-only
+    // events. Favourites stay within that day's truthful event category.
+    if(sort==='latest'){const category=latestRank(a.programme)-latestRank(b.programme);if(category)return category;}
+    const favourite=favouritesOnTop?Number(favouriteKeys.includes(keyOf(b.channel)))-Number(favouriteKeys.includes(keyOf(a.channel))):0;
+    if(favourite)return favourite;
+    const channel=channelOrder.get(a.channel)!-channelOrder.get(b.channel)!;
+    const start=(Number.isFinite(a.programme.start)?a.programme.start:0)-(Number.isFinite(b.programme.start)?b.programme.start:0);
+    return sort==='latest'?-start||channel:sort==='upcoming'?start||channel:channel||start;
+  });
+  const agendaDays=[...days].sort(compareDays);
   const agenda=mobileDay==='week'?allAgenda:allAgenda.filter(entry=>(entry.programme.date||live.date)===mobileDay);
   const renderedAgenda=canVirtualize?agenda.slice(0,renderCount):agenda;
   const renderedChannels=canVirtualize?visibleChannels.slice(0,renderCount):visibleChannels;
@@ -143,7 +163,7 @@ export default function Guide({ favouritesOnTop, onFavouritesOnTop, live }: { fa
    {display==='agenda'?<Grid gap="lg" align="flex-start">
     <Grid.Col span={{base:12,sm:3}}><Paper withBorder radius="lg" p="sm"><Stack gap="sm"><TextInput type="date" aria-label="Choose date" value={mobileDay==='week'?live.date:mobileDay} onChange={event=>{if(event.currentTarget.value){setMobileDay(event.currentTarget.value);live.selectDate(event.currentTarget.value);}}}/>{mobileControls?<NativeSelect aria-label="Guide day" value={mobileDay} onChange={event=>setMobileDay(event.currentTarget.value)} data={[{value:'week',label:'Whole week ('+allAgenda.length+')'},...days.map(day=>({value:day,label:mediaDate(day)+' ('+allAgenda.filter(entry=>(entry.programme.date||live.date)===day).length+')'}))]}/>:<Stack gap={4} aria-label="Select guide day"><NavLink component="button" type="button" label="Whole week" rightSection={<Badge variant="light" color="gray">{allAgenda.length}</Badge>} active={mobileDay==='week'} onClick={()=>setMobileDay('week')} mih={44}/>{days.map(day=><NavLink key={day} component="button" type="button" label={new Date(day+'T12:00:00Z').toLocaleDateString('en-GB',{weekday:'long',day:'numeric',month:'short',timeZone:'UTC'})} description={day===live.today?'Today':undefined} rightSection={<Badge variant="light" color="gray">{allAgenda.filter(entry=>(entry.programme.date||live.date)===day).length}</Badge>} active={mobileDay===day} aria-pressed={mobileDay===day} onClick={()=>setMobileDay(day)} mih={52}/> )}</Stack>}</Stack></Paper></Grid.Col>
     <Grid.Col span={{base:12,sm:9}}><Stack gap="lg" aria-label="Guide agenda">
-     {days.filter(day=>mobileDay==='week'||mobileDay===day).map(day=>{const entries=renderedAgenda.filter(entry=>(entry.programme.date||live.date)===day);if(!entries.length&&mobileDay==='week')return null;return <Stack component="section" key={day} gap="sm" aria-label={'Programmes for '+day}><Group justify="space-between"><Stack gap={2}><Title order={2} size="h4">{day===live.today?'Today':new Date(day+'T12:00:00Z').toLocaleDateString('en-GB',{weekday:'long',timeZone:'UTC'})}</Title><Text size="xs" c="dimmed">{mediaDate(day)}</Text></Stack><Badge variant="light" color="gray">{allAgenda.filter(entry=>(entry.programme.date||live.date)===day).length} programmes</Badge></Group>{entries.map(({channel,programme})=>agendaProgramme(channel,programme))}{!entries.length&&!live.loading&&<Text size="sm" c="dimmed">No programmes for this day.</Text>}</Stack>;})}
+     {agendaDays.filter(day=>mobileDay==='week'||mobileDay===day).map(day=>{const entries=renderedAgenda.filter(entry=>(entry.programme.date||live.date)===day);if(!entries.length&&mobileDay==='week')return null;return <Stack component="section" key={day} gap="sm" aria-label={'Programmes for '+day}><Group justify="space-between"><Stack gap={2}><Title order={2} size="h4">{day===live.today?'Today':new Date(day+'T12:00:00Z').toLocaleDateString('en-GB',{weekday:'long',timeZone:'UTC'})}</Title><Text size="xs" c="dimmed">{mediaDate(day)}</Text></Stack><Badge variant="light" color="gray">{allAgenda.filter(entry=>(entry.programme.date||live.date)===day).length} programmes</Badge></Group>{entries.map(({channel,programme})=>agendaProgramme(channel,programme))}{!entries.length&&!live.loading&&<Text size="sm" c="dimmed">No programmes for this day.</Text>}</Stack>;})}
      {!live.loading&&!live.error&&!agenda.length&&<Paper withBorder radius="md" p="xl"><Stack align="center"><CalendarDays size={28}/><Text fw={600}>No programmes in this view</Text><Text size="sm" c="dimmed">Choose another day, adjust the filters or use the shared search.</Text></Stack></Paper>}
      {hasMore&&<Box ref={sentinelRef} role="status" aria-label="Loading more programmes"><SkeletonRow/><Button variant="secondary" onClick={()=>setRenderCount(count=>Math.min(count+guideBatch,total))}>Load more programmes</Button></Box>}
     </Stack></Grid.Col>

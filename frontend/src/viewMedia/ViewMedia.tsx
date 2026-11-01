@@ -1,3 +1,4 @@
+import VodGroupDetails from './VodGroupDetails';
 import surfaces from '../components/MediaSurfaces.module.css';
 import { retargetLocalCard, type LibraryChange } from './localRename';
 import { NotificationMessage } from '../notifications';
@@ -6,7 +7,7 @@ import { SelectField as NativeSelect } from '../components/SelectField';
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Film, Grid2X2, LayoutGrid, List, Tv, X, Youtube } from 'lucide-react';
 import { api } from '../api';
-import { filterMediaCards } from './filtering';
+import { filterMediaCards, filterMediaWarnings } from './filtering';
 import { mediaSearchQuery } from '../appNavigation';
 import { Button, Dialog, DialogContent, PopupShell } from '../components/ui';
 import { DetailSheet } from '../components/DetailSheet';
@@ -50,7 +51,7 @@ export const MediaTile = memo(function MediaTile({item,layout,upcoming,label,sea
   const KindIcon=kindLabel==='TV show'?Tv:kindLabel.startsWith('YouTube')?Youtube:Film;
   const searchVideo=searched&&['youtube','video'].includes(item.kind);
   const grouped=item.action?.type==='local-group';
-  const countLabel=item.count?item.count+' '+(item.count===1?{show:'episode',shows:'episode',youtube:'video'}[item.kind]||'file':{show:'episodes',shows:'episodes',youtube:'videos'}[item.kind]||'files'):'';
+  const countLabel=item.count?item.count+' '+(item.action.type==='vod-group'?(item.count===1?'file':'files'):item.count===1?{show:'episode',shows:'episode',youtube:'video'}[item.kind]||'file':{show:'episodes',shows:'episodes',youtube:'videos'}[item.kind]||'files'):'';
   const subtitle=searchVideo?(mediaDate(item.date)||'Upload date unavailable'):grouped?(item.year?item.year+' · '+countLabel:countLabel):item.year||mediaDate(item.date)||(searched?'':({movie:'Movie',show:'TV show',video:'YouTube'}[item.kind]||label));
   const origins=(item.origins||[item.origin]).filter(Boolean),hasStatus=searched||!!item.count||origins.length>0||layout==='list'&&!!item.description;
   const hoverInfo:HoverInfo={title:item.title,image:item.image,backdrop:item.backdrop,kind:item.kind==='channel'?'Channel':kindLabel,year:item.year,rating:item.rating,date:item.date?.slice(0,10)||item.releaseDate?.slice(0,10),channel:item.channel,channelId:item.channelId,description:item.description};
@@ -181,6 +182,7 @@ export default function ViewMedia({csrf,initial,initialSource='discover',initial
   // overlay is ever visible.
   function itemDialog(item:MediaCard,subtitle:string|undefined,close:()=>void){
    if(item.action.type==='discover')return <DiscoveryTitle globalSearch={globalSearch} key={item.id} item={item.action.item} csrf={csrf} onClose={close}/>;
+   if(item.action.type==='vod-group')return <VodGroupDetails key={item.id} item={item} csrf={csrf} onClose={close}/>;
    if(item.action.type==='vod')return <M3uDetails source={item.action.source} item={item.action.item} onClose={close}/>;
    if(item.action.type==='youtube')return <VideoSheet csrf={csrf} open onOpenChange={open=>{if(!open)close();}}
      video={{...item,id:item.action.id,title:item.title,image:item.image,backdrop:item.backdrop,channel:item.channel,channelId:item.channelId}}
@@ -244,7 +246,7 @@ export default function ViewMedia({csrf,initial,initialSource='discover',initial
       </Group>
     </Group>
     {error&&<NotificationMessage kind="error" message={error} actions={<> <Button variant="secondary" onClick={()=>setRevision(i=>i+1)}>Try again</Button> </>}/>}
-    <MediaWarnings key={scopeKey+':'+revision} messages={page?.warnings}/>
+    <MediaWarnings key={scopeKey+':'+revision} messages={globalSearch?filterMediaWarnings(page?.warnings,searchSource,searchKind):page?.warnings}/>
     {page?.scanning&&<Text size="sm" role="status">Reading your local media folders…</Text>}
     <MediaResults items={cards} layout={layout} searched={globalSearch} source={source} today={today} onOpen={openItem} limits={searchLimits} loading={busy||page?.loading||page?.refreshing||!!selected||!!childSelected} onMore={globalSearch?group=>setSearchLimits(old=>({...old,[group]:(old[group]||searchPageSize)+searchPageSize})):undefined}/>
     {globalSearch&&!busy&&!!page?.items.length&&!cards.length&&<Text c="dimmed" my="xl">No matches in these filters. Choose All sources or All media to see the other results.</Text>}

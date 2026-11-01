@@ -1,0 +1,44 @@
+# Optional overlay: separate read-only inputs and writable saved-copy views.
+# Set both host paths explicitly before adding this file to your normal Compose command.
+# Set REELDOCK_LIBRARY_WRITE_GID to the existing library's writable group
+# The group must already have write access to the selected library directories.
+# Validated copies are saved beside originals; originals are never replaced.
+x-library-environment: &library-environment
+  REELDOCK_TV_LIBRARY: /existing-library/tv
+  REELDOCK_MOVIE_LIBRARY: /existing-library/movies
+  REELDOCK_TV_OUTPUT: /optimised-library/tv
+  REELDOCK_MOVIE_OUTPUT: /optimised-library/movies
+x-library-groups: &library-groups
+  - ${REELDOCK_LIBRARY_WRITE_GID:?Set the existing library writable group ID}
+x-library-volumes: &library-volumes
+  - type: bind
+    source: ${REELDOCK_EXISTING_TV_PATH:?Set the existing TV Shows host directory}
+    target: /existing-library/tv
+    read_only: true
+    bind:
+      create_host_path: false
+  - type: bind
+    source: ${REELDOCK_EXISTING_MOVIE_PATH:?Set the existing Movies host directory}
+    target: /existing-library/movies
+    read_only: true
+    bind:
+      create_host_path: false
+  - type: bind
+    source: ${REELDOCK_EXISTING_TV_PATH:?Set the existing TV Shows host directory}
+    target: /optimised-library/tv
+    bind:
+      create_host_path: false
+  - type: bind
+    source: ${REELDOCK_EXISTING_MOVIE_PATH:?Set the existing Movies host directory}
+    target: /optimised-library/movies
+    bind:
+      create_host_path: false
+services:
+  web:
+    environment: *library-environment
+    volumes: *library-volumes
+    group_add: *library-groups
+  worker:
+    environment: *library-environment
+    volumes: *library-volumes
+    group_add: *library-groups

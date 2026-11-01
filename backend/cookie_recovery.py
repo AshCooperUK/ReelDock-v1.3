@@ -52,7 +52,8 @@ def resume(store):
             if blocked_in(db,['video:'+row[0],'managed:video:'+row[0]]):continue
             db.execute("UPDATE emby_watched SET state='retry',message='Session restored; watched check queued automatically.' WHERE scope=? AND id=?", (scope,row[0]))
             db.execute('INSERT OR REPLACE INTO emby_attempts VALUES (?,?,?,?,0)', (scope,row[0],time.time(),0))
-        for row in db.execute("SELECT id FROM downloads WHERE state='failed' AND message=?",(DOWNLOAD_MESSAGE,)).fetchall():
+        from .downloads import MAX_ATTEMPTS
+        for row in db.execute("SELECT id FROM downloads WHERE state='failed' AND message=? AND attempt_count<?",(DOWNLOAD_MESSAGE,MAX_ATTEMPTS)).fetchall():
             if not blocked_in(db,['video:'+row[0],'managed:video:'+row[0]]):
                 db.execute("UPDATE downloads SET state='queued',progress=0,message='Cookies restored; download queued automatically.',updated=? WHERE id=?",(time.time(),row[0]))
     store.set('emby_watched_paused', '')

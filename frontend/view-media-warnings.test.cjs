@@ -20,3 +20,13 @@ const next=warnings({messages:[...messages,'Another provider could not complete 
 assert.equal(next.type,Mantine.Alert);assert.match(next.props.children.props.children,/Another provider could not complete this search\./,'a new warning is visible');
 dismissed='';assert.equal(warnings({messages}).type,Mantine.Alert,'a new search remount restores its own notices');
 console.log('Source warnings remain complete, local, accessible and dismissible without global download-screen toasts.');
+const filterExports={};
+vm.runInNewContext(ts.transpileModule(fs.readFileSync(__dirname+'/src/viewMedia/filtering.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS}}).outputText,{exports:filterExports});
+const tv='NZB TV metadata: extra dates or artwork could not be checked for 1 series (Fixture). Known dates are kept; unknown dates sort last. Retrying automatically.';
+const legacy='Some TV metadata could not be checked. Known dates are shown; unknown dates sort last.';
+for(const known of [tv,legacy]){
+ assert.deepEqual(Array.from(filterExports.filterMediaWarnings([known,...messages],'all','all')),[known,...messages]);
+ assert.deepEqual(Array.from(filterExports.filterMediaWarnings([known,...messages],'discover','shows')),[known,...messages]);
+ for(const [source,kind] of [['all','movies'],['vod','all'],['local','shows'],['subscriptions','youtube']])assert.deepEqual(Array.from(filterExports.filterMediaWarnings([known,...messages],source,kind)),messages,'only the known TV metadata scope can be omitted from unrelated filters');
+}
+assert.deepEqual(Array.from(filterExports.filterMediaWarnings(['Unknown source warning'],'vod','movies')),['Unknown source warning']);

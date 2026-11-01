@@ -174,7 +174,7 @@ class SavedCatalogueTests(unittest.TestCase):
                 page=saved.browse(self.app,self.store,dict(args,offset=offset),'vod')
                 seen+=page['items'];offset=page['nextOffset']
             self.assertTrue(page['completeSet']);self.assertEqual(len(seen),1105)
-            self.assertTrue(all(item['action']['type']=='vod' and item['action']['source']=='source' and item['action']['item']['path'].endswith('.strm') for item in seen))
+            self.assertTrue(all(item['action']['type']=='vod-group' and item['_entry']['source']=='source' and item['_entry']['path'].endswith('.strm') for item in seen))
             legacy=adapters.vod(self.app,self.store,args)
             self.assertEqual(len(legacy['items']),24);self.assertEqual(legacy['nextOffset'],24)
 
@@ -224,7 +224,7 @@ class SavedCatalogueTests(unittest.TestCase):
             self.assertFalse(result['loading']);self.assertEqual(result['items'],[])
             # Search cache uses five minutes, independently of the hourly sweep.
             with self.store.connect() as db:
-                row=db.execute("SELECT key,body FROM view_media_cache WHERE key LIKE 'saved:state:saved:query:v2:%'").fetchone()
+                row=db.execute("SELECT key,body FROM view_media_cache WHERE key LIKE 'saved:state:saved:query:v3:%'").fetchone()
                 state=json.loads(row['body']);self.assertLessEqual(state['retryAt']-time.time(),300)
                 db.execute("UPDATE view_media_cache SET body=json_set(body,'$.retryAt',0) WHERE key=?",(row['key'],))
             saved.search(self.app,self.store,self.args(fresh=True));self.assertEqual(len(tasks),2)
@@ -324,7 +324,7 @@ class SavedCatalogueTests(unittest.TestCase):
         video=next(row for row in rows if row['kind']=='video');self.assertEqual(video['channelId'],channel)
         film=next(row for row in rows if row['kind']=='movie');self.assertEqual(film['_entry']['source'],'a-source');self.assertEqual(film['_entry']['path'],'z-file.strm')
         page=saved.browse(self.app,self.store,dict(media='movies',collection='a-source',sort='title'),'vod')
-        self.assertEqual(page['items'][0]['action']['type'],'vod');self.assertEqual(page['items'][0]['action']['item']['path'],'z-file.strm')
+        self.assertEqual(page['items'][0]['action']['type'],'vod-group');self.assertEqual(page['items'][0]['_entry']['path'],'z-file.strm')
         page=saved.browse(self.app,self.store,dict(media='youtube',collection='',sort='title'),'subscriptions')
         self.assertEqual(len(page['items']),1)
         with self.store.connect() as db:db.execute('UPDATE channels SET active=0')

@@ -46,17 +46,25 @@ def _checks(page,saved,current):
     known={_identity(item) for item in saved.get('items',[])}
     added=(current.get('status')=='complete' and current.get('checkedAt',0)>saved.get('checkedAt',0)
         and bool(set(current.get('resultKeys',[]))-known))
+    # A completed newer check owns current source health. The immutable result
+    # frame must not pin a recovered provider's former warning until expiry.
+    warnings=current.get('warnings',[]) if current.get('status')=='complete' and current.get('checkedAt',0)>saved.get('checkedAt',0) else [*page.get('warnings',[]),*current.get('warnings',[])]
     return dict(page,providerChecksPending=pending,providerChecksComplete=current.get('status')=='complete',
         searchUpdatesAvailable=added,refreshAfterMs=2000 if pending else 0,
-        warnings=list(dict.fromkeys([*page.get('warnings',[]),*current.get('warnings',[])])))
+        warnings=list(dict.fromkeys(warnings)))
+
+def _search_scope(store):
+    from ..discovery_engine import browse_cache_key
+    return hashlib.sha256(browse_cache_key(dict(media='all',q='',sort='source',offset=0,collection='',category='all',cursor=None,**{'global':True}),store).encode()).hexdigest()
 
 def search(app,store,args):
     from .. import discovery_engine as engine,discover_sources as sources
     from .search_snapshot import collect
     catalogue.initialise(store);sig=catalogue.signature(store)
+    account_scope=_search_scope(store)
     generation=store.get('catalogue_generation','0')
     canonical=dict(args,offset=0,cursor=None,sort='source');canonical.pop('fresh',None)
-    key='saved:query:v2:'+sig+':'+generation+':'+hashlib.sha256(args['q'].casefold().encode()).hexdigest()
+    key='saved:query:v3:'+sig+':'+account_scope+':'+generation+':'+hashlib.sha256(args['q'].casefold().encode()).hexdigest()
     if args.get('cursor'):
         with store.connect() as db:row=db.execute('SELECT body,updated FROM view_media_cache WHERE key=?',(PREFIX+args['cursor']['snapshot'],)).fetchone()
         if not row or row['updated']<time.time()-86400:raise ValueError('This search has expired. Search again.')
@@ -64,16 +72,17 @@ def search(app,store,args):
         if saved.get('searchKey')!=key:raise ValueError('This search has changed. Search again.')
         return _checks(dict(_page(saved,args['cursor']['snapshot'],args),completeSet=True),saved,catalogue.state(store,key)[0])
     job_key='engine:global-search:saved:'+key;job=(str(store.directory),job_key)
+    def valid():return catalogue.valid(store,sig,generation) and _search_scope(store)==account_scope
     def update():
         current,_=catalogue.state(store,key)
-        if current.get('retryAt',0)>time.time() or not catalogue.valid(store,sig,generation):return
+        if current.get('retryAt',0)>time.time() or not valid():return
         catalogue.save_state(store,key,dict(status='checking',startedAt=time.time(),warnings=current.get('warnings',[])))
-        try:result=collect(app,store,dict(canonical,_checkpoint=lambda:catalogue.valid(store,sig,generation)))
+        try:result=collect(app,store,dict(canonical,_checkpoint=valid))
         except Exception:
-            if catalogue.valid(store,sig,generation):catalogue.save_state(store,key,dict(status='failed',retryAt=time.time()+60,
+            if valid():catalogue.save_state(store,key,dict(status='failed',retryAt=time.time()+60,
                 warnings=['Provider search could not finish. Saved matches are retained; search again to retry.']))
             return
-        if catalogue.valid(store,sig,generation):
+        if valid():
             catalogue.remember_search(store,sig,result['items'],args['q'])
             catalogue.save_state(store,key,dict(status='complete',checkedAt=time.time(),retryAt=time.time()+(60 if result.get('incomplete') else TTL),
                 resultKeys=list(dict.fromkeys(_identity(item) for item in result['items'])),warnings=result.get('warnings',[])))
@@ -95,7 +104,11 @@ def search(app,store,args):
     if prior and not args.get('fresh') and previous['updated']>time.time()-TTL:
         if not prior.get('awaitingProviders') or waiting and time.time()-prior['awaitingSince']<MAX_WAIT:
             return _checks(dict(_page(prior,prior['snapshot'],args),completeSet=True,loading=bool(prior.get('awaitingProviders'))),prior,current)
-    items=global_search.merge([item for kind in ('movie','show','video','channel') for item in catalogue._cards(store,sig,args['q'],kind=kind)])
+    from .vod_groups import browse as vod_browse,cards as vod_cards
+    vod=[dict(item,origin='VOD') for media in ('movies','shows') for item in vod_cards(vod_browse(store,media,args['q'],limit=SAVED_WINDOW))]
+    # Current playlist rows own VOD availability and all selectable versions.
+    # Remembered cards may outlive a removed source or a replaced import.
+    items=global_search.merge([*[item for kind in ('movie','show','video','channel') for item in catalogue._cards(store,sig,args['q'],kind=kind) if item.get('origin')!='VOD'],*vod])
     awaiting=not items and waiting
     warnings=list(current.get('warnings',[]))
     if prior and prior.get('awaitingProviders') and time.time()-prior['awaitingSince']>=MAX_WAIT:

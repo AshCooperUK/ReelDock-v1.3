@@ -257,7 +257,7 @@ def schedule(store, media, channel=None):
             if eligible(video,rule):
                 with store.connect() as db:
                     if blocked_in(db,['video:'+video['id'],'managed:video:'+video['id']]):continue
-                enqueue(store,video,rule['quality'],automatic=True)
+                enqueue(store,video,rule['quality'],automatic=True,quality_inherited=True)
                 with store.connect() as db:
                     db.execute('BEGIN IMMEDIATE')
                     if blocked_in(db,['video:'+video['id'],'managed:video:'+video['id']]):continue

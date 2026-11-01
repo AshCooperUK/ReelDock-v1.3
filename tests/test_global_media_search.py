@@ -60,18 +60,26 @@ class GlobalSearchTests(unittest.TestCase):
             kind='movie' if args['media']=='movies' else 'show'
             item=dict(id=kind+':1234567',kind=kind,externalId='1234567',title='Python '+kind)
             return dict(items=[dict(id=item['id'],kind=kind,title=item['title'],action=dict(type='discover',item=item))],nextOffset=1,nextCursor='{"nzb":100}')
+        vod_seen=[]
         def vod(store,media,query,offset):
-            return dict(items=[dict(id='imdb:movie:1234567',externalId='1234567',kind='movie',title='Python movie')],nextOffset=None) if media=='movies' else dict(items=[],nextOffset=None)
+            vod_seen.append((media,query,offset))
+            return dict(items=[dict(id='vodgroup:'+'a'*40,externalId='1234567',kind='movie',title='Python movie',count=2,_collectionId='movie:1234567',_entry=dict(source='vod',path='Movies/Python.strm',kind='movies'))],nextOffset=24 if offset==0 else None) if media=='movies' else dict(items=[],nextOffset=None)
         local=dict(id='local:file',kind='movies',title='Local Python',action=dict(type='local',id='file'))
         video=dict(id='youtube:abcdefghijk',videoId='abcdefghijk',kind='video',title='Python tutorial')
         with patch.object(search.sources,'indexers_for',return_value=[{}]),patch.dict(search.REGISTRY,{'discover':{'browse':nzb},'local':{'browse':lambda *a:dict(items=[local],nextOffset=None)}}),patch.object(search,'catalogue',side_effect=vod),patch('backend.youtube_discover.browse',return_value=dict(items=[video],nextOffset=20)) as youtube:
             result=search.browse(self.app,self.store,self.args(_partial=lambda result:None))
+            continuation=search.browse(self.app,self.store,self.args(offset=1,cursor={'vod_movies':24}))
         self.assertEqual({i['kind'] for i in result['items']},{'movie','show','video'})
         self.assertEqual(len(result['items']),4,'Same verified movie from VOD and NZB shares one result')
         movie=next(i for i in result['items'] if i['kind']=='movie' and i['action']['type']=='discover')
         self.assertEqual(set(movie['origins']),{'NZB','VOD'})
+        self.assertEqual(result['warnings'],[],'every mocked provider must complete with its real grouped-card contract')
         self.assertCountEqual(seen,[('movies','all',0),('shows','',0)])
-        self.assertEqual(json.loads(result['nextCursor']),dict(nzb_movies=100,nzb_shows=100,youtube=20))
+        self.assertEqual(json.loads(result['nextCursor']),dict(nzb_movies=100,nzb_shows=100,youtube=20,vod_movies=24))
+        self.assertCountEqual(vod_seen,[('movies','Python',0),('shows','Python',0),('movies','Python',24)])
+        self.assertEqual(continuation['items'][0]['action']['type'],'vod-group')
+        self.assertEqual(continuation['items'][0]['action']['target']['id'],'movie:1234567')
+        self.assertIsNone(continuation['nextCursor'])
         youtube.assert_called_once_with(self.store,query='Python',offset=0,search_dates=True)
     def test_continuation_does_not_restart_exhausted_providers(self):
         with patch.object(search.sources,'indexers_for',return_value=[{}]),patch.dict(search.REGISTRY,{'local':{'browse':lambda *a:self.fail('Local results are exhausted')}}),patch('backend.youtube_discover.browse',return_value=dict(items=[],nextOffset=None)) as youtube:

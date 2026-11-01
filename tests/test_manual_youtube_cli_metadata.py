@@ -26,8 +26,8 @@ def deny_network(event, args):
     if event in ('socket.connect', 'socket.getaddrinfo'):
         raise AssertionError('The offline metadata fixture attempted network access')
 sys.addaudithook(deny_network)
-import yt_dlp
-yt_dlp.main()
+from backend.youtube_download import main
+main()
 """
 
 
@@ -67,7 +67,7 @@ class ManualYoutubeCliMetadataTests(unittest.TestCase):
 
     def cli(self, args):
         """Keep all product options; replace only the external extractor input."""
-        self.assertEqual(args[1:3], ['-m', 'yt_dlp'])
+        self.assertEqual(args[1:3], ['-m', 'backend.youtube_download'])
         separator = args.index('--')
         options = args[3:separator] + ['--enable-file-urls', '--load-info-json', str(self.fixture)]
         return subprocess.run([sys.executable, '-c', OFFLINE_CLI, *options], capture_output=True, text=True, timeout=20)

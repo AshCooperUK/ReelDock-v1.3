@@ -74,7 +74,12 @@ def _entry(root, path):
     # then the title folder's poster — never the category root's.
     art = next((p for p in (path.with_suffix('.jpg'), *(path.parent/(path.stem+'-thumb'+ext) for ext in ('.jpg','.jpeg','.png','.webp')), *(c for d in art_dirs for c in (d/'poster.jpg', d/'folder.jpg'))) if p.is_file() and not p.is_symlink()), None)
     backdrop = next((c for d in art_dirs for c in (d/'fanart.jpg',) if c.is_file() and not c.is_symlink()), None)
-    entry = dict(path=path, art=art, backdrop=backdrop or art)
+    imdb_ids = []
+    if meta is not None:
+        for raw_identity in [value('imdbid'), *(node.text or '' for node in meta.findall('uniqueid') if (node.get('type') or '').lower() == 'imdb')]:
+            if re.fullmatch(r'(?:tt)?[0-9]{5,12}', raw_identity.strip()):
+                imdb_ids.append(int(raw_identity.strip().removeprefix('tt')))
+    entry = dict(path=path, art=art, backdrop=backdrop or art, imdb_ids=imdb_ids)
     base = '/api/view-media/local/' + identity
     title=value('title') or path.stem
     season = int(value('season')) if value('season').isdigit() else (int(se_match[1]) if se_match else None)
@@ -270,7 +275,8 @@ def library_dates(store, state, root=None):
     import json
     from ..media_duration import fields as duration_fields
     with store.connect() as db:
-        rows = list(db.execute("SELECT o.path,r.updated FROM discover_owned o JOIN discover_requests r ON r.id=o.request_id WHERE o.state='complete'"))
+        owned = list(db.execute("SELECT o.path,o.key,r.updated,r.body,r.episode_key,r.kind,r.state AS request_state FROM discover_owned o JOIN discover_requests r ON r.id=o.request_id WHERE o.state='complete'"))
+        rows = list(owned)
         rows += list(db.execute("SELECT destination AS path,updated FROM m3u_downloads WHERE state='complete'"))
         saved = list(db.execute("SELECT m.path,m.channel,d.updated,v.data AS video_data FROM media_files m JOIN downloads d ON d.id=m.id LEFT JOIN videos v ON v.id=m.id WHERE d.state='complete'"))
         rows += saved
@@ -282,9 +288,13 @@ def library_dates(store, state, root=None):
         try:video=json.loads(row['video_data'] or '{}')
         except (TypeError,ValueError):continue
         durations[str(Path(root or '.')/row['path'])]=duration_fields(seconds=video.get('duration_seconds'),clock=video.get('duration'))
+    from .local_metadata import fields, fill
+    metadata = fields(owned, Path(root or '.'))
     result=[]
     for item in state['items']:
-        path=state['files'][item['action']['id']]['path']
+        entry=state['files'][item['action']['id']]
+        path=entry['path']
+        item=fill(item,entry,metadata.get(str(path)))
         added=dates.get(str(path))
         if added is None:
             added=next((dates[str(p)] for p in path.parents if str(p) in dates),None)

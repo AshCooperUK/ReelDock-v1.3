@@ -3,7 +3,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from datetime import datetime,timezone
 from .adapters import card,REGISTRY
-from .download_sources import catalogue,vod_rows
+from .download_sources import catalogue
 from .identity import movie_identity,valid_card
 from .. import discover_sources as sources
 
@@ -19,7 +19,7 @@ def merge(items):
         if old:
             # NZB identity drives one movie popup; it also offers matching VOD files.
             chosen=item if item.get('origin')=='NZB' and old.get('origin')!='NZB' else old
-            origins=list(dict.fromkeys([*old.get('origins',[old.get('origin','')]),item.get('origin','')]))
+            origins=list(dict.fromkeys([*old.get('origins',[old.get('origin','')]),*item.get('origins',[item.get('origin','')])]))
             result[key]=dict(chosen,origins=origins)
         else:result[key]=item
     return list(result.values())
@@ -30,15 +30,10 @@ def browse(app,store,args):
     def nzb(media,offset):
         return REGISTRY['discover']['browse'](app,store,dict(args,media=media,collection='all' if media=='movies' else '',offset=0,cursor={'nzb':offset},sort='source',_partial=None))
     def vod(media,offset):
-        page=catalogue(store,media,query,offset);cards=[]
-        for item in page['items']:
-            if item['kind']=='movie':cards.append(card(item,dict(type='discover',item=item)))
-            else:
-                rows=vod_rows(store,item)
-                if rows:
-                    row=rows[0]
-                    cards.append(card(item,dict(type='vod',source=row['source'],item=dict(title=row['title'],path=row['path'],kind=row['kind']))))
-        return dict(items=cards,nextOffset=page['nextOffset'])
+        from .vod_groups import cards
+        page=catalogue(store,media,query,offset)
+        return dict(page,items=cards(page))
+
     def youtube(offset):
         from ..youtube_discover import browse
         page=browse(store,query=query,offset=offset,search_dates=True);cards=[]
@@ -62,7 +57,8 @@ def browse(app,store,args):
     try:nzb_enabled=bool(sources.indexers_for(app,store))
     except ValueError:nzb_enabled=False
     with store.connect() as db:
-        vod_enabled=bool(db.execute("SELECT 1 FROM m3u_sources WHERE coalesce(json_extract(options,'$.enabled'),1)=1 LIMIT 1").fetchone())
+        from ..m3u_availability import AVAILABLE_SQL
+        vod_enabled=bool(db.execute("SELECT 1 FROM m3u_sources s WHERE "+AVAILABLE_SQL+" LIMIT 1").fetchone())
     lanes={'local':('Local Library',local),'youtube':('YouTube',youtube)}
     if nzb_enabled:lanes.update(nzb_movies=('NZB',lambda offset:nzb('movies',offset)),nzb_shows=('NZB',lambda offset:nzb('shows',offset)))
     if vod_enabled:lanes.update(vod_movies=('VOD',lambda offset:vod('movies',offset)),vod_shows=('VOD',lambda offset:vod('shows',offset)))

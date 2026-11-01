@@ -1,25 +1,24 @@
-import tempfile
 import unittest
+import tempfile
 from unittest.mock import patch
-from backend import discover_store, discovery_engine as engine
-from backend.storage import Store
+from backend.app import create_app
+from backend import discover_store
+from backend import discovery_engine as engine
 
 
 class YoutubeFallbackIdentityTests(unittest.TestCase):
-    item = dict(id='tvmaze:show:71810', title='Big Brother', year='2023', externalId='440642')
+    item = dict(id='tvmaze:show:71810',kind='show',title='Big Brother',year='2023',externalId='440642')
     edition = dict(title='Big Brother', year='2023', country='GB', countryName='United Kingdom')
     episode = dict(season=4, number=15)
 
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        self.store = Store(self.tmp.name)
+        temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup)
+        self.app=create_app({'TESTING':True,'DATA_DIR':temporary.name})
+        self.store=self.app.extensions['store']
 
-    def request(self, body):
-        # Exercise the real per-request handoff lock with disposable request state.
-        return discover_store.insert_request(self.store, dict(id='test',
-            idempotency='youtube-fallback-identity', kind='episode', title='Big Brother',
-            quality='1080', fallback=False, body=body))[0]
+    def request(self,body):
+        return discover_store.insert_request(self.store,dict(idempotency='identity-fixture',kind='episode',
+            title='Big Brother',quality='1080',fallback=True,body=body,episode_key='tvmaze:show:71810:s4e15'))[0]
 
     def matches(self, title, description='', edition=None):
         return engine.youtube_title_matches(title, self.item, self.episode, self.edition if edition is None else edition, description)
@@ -57,14 +56,17 @@ class YoutubeFallbackIdentityTests(unittest.TestCase):
              patch('backend.discover_youtube.register_video') as register, \
              patch('backend.downloads.enqueue') as enqueue:
             importer.return_value.api.return_value={'items':[dict(id='abcdefghijk',snippet=dict(title='Big Brother Canada S04E15',description='2016'),contentDetails=dict(duration='PT45M'))]}
-            self.assertFalse(engine.fallback_youtube(None,self.store,row,body))
+            self.assertFalse(engine.fallback_youtube(self.app,self.store,row,body))
             self.assertIn('2023 United Kingdom S04E15',search.call_args.args[0])
             importer.return_value.api.assert_called_once()
             register.assert_not_called();enqueue.assert_not_called()
+        with self.store.connect() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM downloads').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT engine FROM discover_requests WHERE id=?',(row['id'],)).fetchone()[0],'')
 
     def test_unknown_country_does_not_start_automatic_search(self):
         body=dict(item=self.item,episode=self.episode,edition=dict(title='Big Brother',year='2023'))
         row=self.request(body)
         with patch('backend.youtube_discover._search') as search:
-            self.assertFalse(engine.fallback_youtube(None,self.store,row,body))
+            self.assertFalse(engine.fallback_youtube(self.app,self.store,row,body))
         search.assert_not_called()
